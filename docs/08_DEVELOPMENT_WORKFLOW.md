@@ -219,6 +219,16 @@ Work does not integrate until all gates pass:
 [ ] diff contains no unrelated changes
 ```
 
+Gate scope covers both code roots. Run from the repository root:
+
+```text
+backend gates ......... cd backend && ../.venv/bin/black --check . && ../.venv/bin/ruff check . && ../.venv/bin/mypy app tests && ../.venv/bin/pytest -q
+setup foundation ...... .venv/bin/black --check --config backend/pyproject.toml ruach_setup tests_bootstrap
+                        .venv/bin/ruff check --config backend/pyproject.toml ruach_setup tests_bootstrap
+                        .venv/bin/mypy --config-file backend/pyproject.toml ruach_setup tests_bootstrap
+                        .venv/bin/python -m pytest -q tests_bootstrap
+```
+
 Anything touching tools, filesystem access, network access,
 policy evaluation, or approval flow requires an explicit security
 review against `05_SECURITY_ARCHITECTURE.md`.
