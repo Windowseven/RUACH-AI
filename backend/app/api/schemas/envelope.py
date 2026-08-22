@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -18,4 +20,28 @@ class HealthData(BaseModel):
 
 class HealthResponse(BaseModel):
     data: HealthData
+    request_id: str
+
+
+class ReadinessData(BaseModel):
+    status: Literal["ready", "not_ready", "degraded"]
+    inference: str
+    database: str
+
+
+class ReadinessResponse(BaseModel):
+    data: ReadinessData
+    request_id: str
+
+
+class SystemData(BaseModel):
+    ruach_version: str
+    api_version: str
+    runtime_status: str
+    inference: str
+    database: str
+
+
+class SystemResponse(BaseModel):
+    data: SystemData
     request_id: str
