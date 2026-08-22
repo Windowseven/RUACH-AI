@@ -117,13 +117,19 @@ cleanup() {
 trap cleanup EXIT
 
 if [ "$MODE" = "adb" ]; then
+    ADB_BIN="$(command -v adb || true)"
+    [ -z "$ADB_BIN" ] && ADB_BIN="$SCRIPT_DIR/../tools/platform-tools/adb"
+    if [ ! -x "$ADB_BIN" ]; then
+        echo "adb not found (PATH or tools/platform-tools)." >&2
+        exit 1
+    fi
     echo
     echo "-- Route A: adb -> shared storage, finalize inside Termux --"
-    run adb devices
-    run adb push "$SRC" "$SDCARD_DIR/$FILE_NAME"
+    run "$ADB_BIN" devices
+    run "$ADB_BIN" push "$SRC" "$SDCARD_DIR/$FILE_NAME"
     if [ "$MODEL_ONLY" -eq 0 ]; then
-        run adb push "$SPIKE_SCRIPT" "$SDCARD_DIR/termux_spike.sh"
-        run adb push "$SRC_BUNDLE" "$SDCARD_DIR/ruach_src.tar.gz"
+        run "$ADB_BIN" push "$SPIKE_SCRIPT" "$SDCARD_DIR/termux_spike.sh"
+        run "$ADB_BIN" push "$SRC_BUNDLE" "$SDCARD_DIR/ruach_src.tar.gz"
     fi
     cat <<EOF
 
