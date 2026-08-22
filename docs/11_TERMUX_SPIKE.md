@@ -108,11 +108,30 @@ Record: commit SHA, build duration, binary size, load time, response, stability.
 
 ## Part C — Model transfer (validation artifact, never committed)
 
-Preferred (USB debugging available):
+The verified artifact is staged in the project at
+`staging/models/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf` (gitignored) with its
+`sha256.txt`. The development host **stages** the model; it never executes it.
+
+Automated transfer script (preferred):
+
+```bash
+# On MacBook, route A — USB debugging (pushes to /sdcard/Download,
+# then prints the exact Termux commands to finalize + verify):
+./staging/push_model.sh
+
+# Route B — Termux sshd (fully automatic incl. on-device hash check):
+pkg install openssh   # on Termux, then: sshd
+./staging/push_model.sh --scp USER@HOST
+
+# Preview either route without side effects:
+./staging/push_model.sh --dry-run
+```
+
+Manual equivalent (route A):
 
 ```bash
 # On MacBook:
-adb push ~/.ruach/models/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf /sdcard/Download/
+adb push staging/models/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf /sdcard/Download/
 # On Termux (once):
 termux-setup-storage
 mkdir -p ~/.ruach/models/qwen3-0.6b
@@ -120,13 +139,10 @@ cp /sdcard/Download/Qwen3-0.6B-Q8_0.gguf ~/.ruach/models/qwen3-0.6b/
 sha256sum ~/.ruach/models/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf
 ```
 
-Fallback: `pkg install openssh` on Termux, `sshd`, then
-`scp` from the Mac. Any mechanism is fine — RUACH only cares that the file
-exists at the configured path.
-
 **Expected SHA-256 (must match):**
 `9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031`
-(source: measured MacBook download, 2026-08-23)
+(source: measured MacBook download, 2026-08-23; re-verified when staged into
+`staging/`, and re-checked by `push_model.sh` before every push)
 
 ---
 

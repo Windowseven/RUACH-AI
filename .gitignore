@@ -20,3 +20,6 @@ htmlcov/
 
 # OS / editor
 .DS_Store
+
+# Model artifacts (staged locally for Termux transfer, never committed)
+staging/models/**/*.gguf
