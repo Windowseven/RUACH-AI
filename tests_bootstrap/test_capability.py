@@ -167,3 +167,26 @@ def test_profile_carries_python_version_and_cores():
     assert profile.python_version == "3.14.6"
     assert profile.cpu_cores == 8
     assert profile.ram_total_bytes == 8 * GiB
+
+
+def test_macbook_classified_as_development_host():
+    result = assessment_for(
+        platform_name="Darwin",
+        termux_prefix="/usr/local",
+        termux_version=None,
+        android_build_prop_exists=False,
+        machine="x86_64",
+        home_path="/Users/dev",
+    )
+    assert result.environment_status == "development_host"
+    assert "TERMUX_NOT_DETECTED" in result.warnings
+
+
+def test_termux_classified_as_target_device():
+    result = assessment_for(machine="armv7l")
+    assert result.environment_status == "target_device"
+
+
+def test_android_without_termux_is_unknown_environment():
+    result = assessment_for(termux_prefix=None, termux_version=None)
+    assert result.environment_status == "unknown"

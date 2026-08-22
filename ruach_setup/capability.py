@@ -20,6 +20,8 @@ GiB = 1024**3
 
 Tier = Literal["light", "balanced", "performance", "unknown"]
 
+EnvironmentStatus = Literal["target_device", "development_host", "unknown"]
+
 DEFAULT_TIERS_PATH = Path(__file__).parent / "data" / "tiers.toml"
 
 
@@ -56,6 +58,20 @@ class CapabilityAssessment:
     tier: Tier
     safe_memory_budget_bytes: int | None
     warnings: tuple[str, ...]
+    environment_status: EnvironmentStatus = "unknown"
+
+
+def classify_environment(profile: DeviceCapabilityProfile) -> EnvironmentStatus:
+    """Distinguish where setup is running.
+
+    The MacBook is a DEVELOPMENT HOST; Android+Termux is the TARGET DEVICE.
+    The two must never be conflated (ARCH-009 clarification §5).
+    """
+    if profile.termux_detected:
+        return "target_device"
+    if not profile.android_detected:
+        return "development_host"
+    return "unknown"
 
 
 def load_tier_config(path: Path | None = None) -> TierConfig:
@@ -153,4 +169,5 @@ def analyze(
         tier=tier,
         safe_memory_budget_bytes=budget if profile.ram_available_bytes else None,
         warnings=tuple(warnings),
+        environment_status=classify_environment(profile),
     )
