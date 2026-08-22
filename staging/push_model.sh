@@ -24,6 +24,7 @@ DEVICE_REL_HOME=".ruach/models/$MODEL_ID"
 MODE="adb"
 SCP_TARGET=""
 DRY_RUN=0
+MODEL_ONLY=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -34,6 +35,10 @@ while [ $# -gt 0 ]; do
             ;;
         --dry-run)
             DRY_RUN=1
+            shift
+            ;;
+        --model-only)
+            MODEL_ONLY=1
             shift
             ;;
         *)
@@ -80,11 +85,46 @@ echo "OK ($EXPECTED_SHA)"
 SIZE_MB=$(( $(stat -f %z "$SRC" 2>/dev/null || stat -c %s "$SRC") / 1024 / 1024 ))
 echo "Size  : ${SIZE_MB} MB"
 
+SPIKE_SCRIPT="$SCRIPT_DIR/termux_spike.sh"
+SRC_BUNDLE=""
+if [ "$MODEL_ONLY" -eq 0 ]; then
+    if [ ! -f "$SPIKE_SCRIPT" ]; then
+        echo "MISSING: $SPIKE_SCRIPT" >&2
+        exit 1
+    fi
+    echo "Bundling project source (fresh, excludes artifacts/caches)..."
+    SRC_BUNDLE="${TMPDIR:-/tmp}/ruach_src.$$.tar.gz"
+    rm -f "$SRC_BUNDLE"
+    tar czf "$SRC_BUNDLE" \
+        --exclude='.git' \
+        --exclude='.venv' \
+        --exclude='__pycache__' \
+        --exclude='*.py[cod]' \
+        --exclude='.mypy_cache' \
+        --exclude='.pytest_cache' \
+        --exclude='.ruff_cache' \
+        --exclude='staging/models' \
+        --exclude='tools' \
+        -C "$SCRIPT_DIR/.." .
+    echo "Bundle: $(du -h "$SRC_BUNDLE" | cut -f1)"
+fi
+
+cleanup() {
+    if [ -n "$SRC_BUNDLE" ] && [ -f "$SRC_BUNDLE" ]; then
+        rm -f "$SRC_BUNDLE"
+    fi
+}
+trap cleanup EXIT
+
 if [ "$MODE" = "adb" ]; then
     echo
     echo "-- Route A: adb -> shared storage, finalize inside Termux --"
     run adb devices
     run adb push "$SRC" "$SDCARD_DIR/$FILE_NAME"
+    if [ "$MODEL_ONLY" -eq 0 ]; then
+        run adb push "$SPIKE_SCRIPT" "$SDCARD_DIR/termux_spike.sh"
+        run adb push "$SRC_BUNDLE" "$SDCARD_DIR/ruach_src.tar.gz"
+    fi
     cat <<EOF
 
 Now on the phone, inside Termux, run:
@@ -99,6 +139,19 @@ The printed hash MUST equal:
 
 If it differs, do not proceed — rerun this script.
 EOF
+    if [ "$MODEL_ONLY" -eq 0 ]; then
+        cat <<EOF
+
+Then start the validation spike (docs/11):
+
+  cp $SDCARD_DIR/termux_spike.sh ~/
+  mkdir -p ~/RUACH-AI && tar xzf $SDCARD_DIR/ruach_src.tar.gz -C ~/RUACH-AI
+  bash ~/termux_spike.sh
+
+It will ask consent before installing packages, then print a PASS/FAIL
+matrix and save everything to ~/spike_results.txt — send that file back.
+EOF
+    fi
 else
     echo
     echo "-- Route B: scp over Termux sshd --"
@@ -114,6 +167,16 @@ else
         exit 1
     fi
     echo "TRANSFER VERIFIED."
+    if [ "$MODEL_ONLY" -eq 0 ]; then
+        run scp "$SPIKE_SCRIPT" "$SCP_TARGET:termux_spike.sh"
+        run ssh "$SCP_TARGET" "mkdir -p \$HOME/RUACH-AI && tar xzf /dev/stdin -C \$HOME/RUACH-AI" < "$SRC_BUNDLE"
+        cat <<EOF
+
+Source + spike runner transferred. On the phone run:
+
+  bash ~/termux_spike.sh
+EOF
+    fi
     echo
     echo "Next on the phone (docs/11 Part B): launch llama-server against:"
     echo "  ~/$DEVICE_REL_HOME/$FILE_NAME"

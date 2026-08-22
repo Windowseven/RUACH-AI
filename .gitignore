@@ -23,3 +23,7 @@ htmlcov/
 
 # Model artifacts (staged locally for Termux transfer, never committed)
 staging/models/**/*.gguf
+
+# Local Android platform-tools + transfer bundles
+tools/
+staging/*.tar.gz

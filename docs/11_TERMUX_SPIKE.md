@@ -115,17 +115,23 @@ The verified artifact is staged in the project at
 Automated transfer script (preferred):
 
 ```bash
-# On MacBook, route A — USB debugging (pushes to /sdcard/Download,
-# then prints the exact Termux commands to finalize + verify):
+# On MacBook — ONE command transfers model + fresh source bundle +
+# spike runner (route A needs tools/platform-tools/adb, bundled in repo):
 ./staging/push_model.sh
 
 # Route B — Termux sshd (fully automatic incl. on-device hash check):
 pkg install openssh   # on Termux, then: sshd
 ./staging/push_model.sh --scp USER@HOST
 
-# Preview either route without side effects:
-./staging/push_model.sh --dry-run
+# Variants:
+./staging/push_model.sh --model-only   # skip source + spike runner
+./staging/push_model.sh --dry-run      # preview without side effects
 ```
+
+The spike runner (`staging/termux_spike.sh`) executes Parts A–C on the phone,
+asks consent before installing packages, prints the PASS/FAIL matrix, and
+saves everything to `~/spike_results.txt`. It installs the built binary to
+`~/.ruach/runtime/llama-server` (the path Part C's boot test expects).
 
 Manual equivalent (route A):
 
