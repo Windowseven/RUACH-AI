@@ -141,8 +141,8 @@ Measured on the actual target device (2026-08-22):
 [x] Available RAM .............. 1.87 MB×10⁶ kB total (1.87 GB); ~0.63 GB free at idle
 [x] Available storage .......... 31 GB free
 [x] Compiler availability ...... clang 21.1.8, cmake 4.4.2, ninja, git 2.55.0
-[ ] llama.cpp build result ..... pending
-[ ] llama-server boot .......... pending
+[ ] llama.cpp build result ..... NOT TESTED (spike pending, see docs/11)
+[ ] llama-server boot .......... NOT TESTED (spike pending, see docs/11)
 ```
 
 Key constraint: **32-bit userland**. All binaries must be compiled natively on-device;
