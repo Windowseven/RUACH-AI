@@ -68,10 +68,12 @@ The default host should remain localhost.
 Example:
 
 ```text
-http://127.0.0.1:8000
+http://127.0.0.1:8018
 ```
 
-The actual port is configuration-driven.
+The actual port is configuration-driven. On the owner's machine, port 8000 is
+occupied by a third-party VPN daemon (`VPN4Test`), so the backend default is 8018
+(see `backend/app/config/settings.py`).
 
 ---
 

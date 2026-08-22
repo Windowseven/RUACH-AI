@@ -183,6 +183,7 @@ When OpenCode (or any AI coding agent) performs implementation work, it must:
 8. Run tests, lint, and type checks before claiming completion.
 9. Report limitations and assumptions honestly.
 10. Ask when uncertain rather than guessing.
+11. Present all state-changing commands and file contents to the owner with explanations before executing them.
 
 ---
 
