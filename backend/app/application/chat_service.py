@@ -1,13 +1,8 @@
-from typing import Protocol
-
 from sqlalchemy.orm import Session
 
 from app.application.conversation_service import ConversationNotFound
+from app.application.inference import InferencePort
 from app.infrastructure.models import Conversation, Message, new_id
-
-
-class InferenceAdapter(Protocol):
-    def complete(self, prompt: str) -> str: ...
 
 
 def _derive_title(content: str) -> str:
@@ -19,7 +14,7 @@ def _derive_title(content: str) -> str:
 
 def execute_chat(
     session: Session,
-    inference: InferenceAdapter,
+    inference: InferencePort,
     message: str,
     conversation_id: str | None = None,
 ) -> Message:

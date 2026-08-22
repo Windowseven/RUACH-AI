@@ -5,6 +5,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.middleware import request_id_var
 from app.api.schemas.envelope import ErrorBody, ErrorResponse
+from app.application.inference import (
+    InferenceFailed,
+    InferenceRuntimeUnavailable,
+    InferenceTimeout,
+    ModelLoadFailed,
+    ModelNotFound,
+)
 
 _STATUS_CODES = {
     status.HTTP_400_BAD_REQUEST: "BAD_REQUEST",
@@ -51,3 +58,27 @@ def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
         return _error_response(500, "INTERNAL_ERROR", "Internal server error.", [])
+
+    @app.exception_handler(InferenceRuntimeUnavailable)
+    async def handle_runtime_unavailable(
+        request: Request, exc: InferenceRuntimeUnavailable
+    ) -> JSONResponse:
+        return _error_response(
+            503, "RUNTIME_UNAVAILABLE", "Local inference runtime is unavailable.", []
+        )
+
+    @app.exception_handler(ModelNotFound)
+    async def handle_model_not_found(request: Request, exc: ModelNotFound) -> JSONResponse:
+        return _error_response(503, "MODEL_NOT_FOUND", "Configured model is not available.", [])
+
+    @app.exception_handler(ModelLoadFailed)
+    async def handle_model_load_failed(request: Request, exc: ModelLoadFailed) -> JSONResponse:
+        return _error_response(503, "MODEL_LOAD_FAILED", "Model failed to load.", [])
+
+    @app.exception_handler(InferenceTimeout)
+    async def handle_inference_timeout(request: Request, exc: InferenceTimeout) -> JSONResponse:
+        return _error_response(504, "INFERENCE_TIMEOUT", "Inference took too long.", [])
+
+    @app.exception_handler(InferenceFailed)
+    async def handle_inference_failed(request: Request, exc: InferenceFailed) -> JSONResponse:
+        return _error_response(502, "INFERENCE_FAILED", "Local inference failed.", [])

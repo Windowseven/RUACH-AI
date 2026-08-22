@@ -2,8 +2,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
-from app.api.dependencies import get_session
+from app.api.dependencies import get_inference, get_session
 from app.infrastructure.db import get_engine
+from app.infrastructure.inference_stub import StubInference
 from app.infrastructure.models import Base
 from app.main import app
 
@@ -21,6 +22,7 @@ def client(tmp_path):
         finally:
             session.close()
 
+    app.dependency_overrides[get_inference] = lambda: StubInference()
     app.dependency_overrides[get_session] = override_get_session
     yield TestClient(app)
     app.dependency_overrides.clear()
