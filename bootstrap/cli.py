@@ -509,6 +509,8 @@ def main(argv: list[str] | None = None) -> int:
     probe_parser.add_argument("--quick", type=int, default=5, help="one-token completions")
     probe_parser.add_argument("--real", type=int, default=3, help="64-token completions")
 
+    subparsers.add_parser("version", help="print the product version")
+
     args = parser.parse_args(argv)
     if args.command == "setup":
         return cmd_setup(
@@ -534,6 +536,11 @@ def main(argv: list[str] | None = None) -> int:
             quick=args.quick,
             real=args.real,
         )
+        return 0
+    if args.command == "version":
+        from bootstrap.version import __version__
+
+        print(f"RUACH v{__version__}")
         return 0
     return cmd_doctor()
 

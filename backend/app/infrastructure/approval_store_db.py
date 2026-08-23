@@ -15,7 +15,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.application.tools.approvals import action_fingerprint
@@ -87,6 +87,10 @@ class PersistentApprovalStore:
             return self._row_to_record(row)
 
     # ---------------------------------------------------------------- mutate
+    # Decision transitions are atomic COMPARE-AND-SET operations (P15 race
+    # fix): UPDATE ... WHERE status='PENDING' under SQLite's write lock.
+    # Two concurrent decisions can never both win — the loser gets an
+    # ApprovalError the engine maps to a non-executing DENIED outcome.
     def approve(self, approval_id: str, fingerprint: str) -> ApprovalRecord:
         with self._sessions() as session:
             row = self._require_pending(session, approval_id)
@@ -94,30 +98,57 @@ class PersistentApprovalStore:
                 raise ApprovalError(
                     "Action changed after approval request; approval is invalid"
                 )
-            row.status = ApprovalState.APPROVED.value
-            row.resolved_at = _now_dt()
-            row.decision = "approved"
+            result = session.execute(
+                update(ApprovalRequest)
+                .where(
+                    ApprovalRequest.id == approval_id,
+                    ApprovalRequest.status == ApprovalState.PENDING.value,
+                )
+                .values(
+                    status=ApprovalState.APPROVED.value,
+                    resolved_at=_now_dt(),
+                    decision="approved",
+                )
+            )
             session.commit()
-            return self._row_to_record(row)
+            if result.rowcount != 1:
+                raise ApprovalError("Approval is no longer pending")
+            return self.get(approval_id)
 
     def reject(self, approval_id: str) -> ApprovalRecord:
         with self._sessions() as session:
             row = self._require_pending(session, approval_id)
-            row.status = ApprovalState.REJECTED.value
-            row.resolved_at = _now_dt()
-            row.decision = "rejected"
+            del row  # read validated existence; the CAS below decides
+            result = session.execute(
+                update(ApprovalRequest)
+                .where(
+                    ApprovalRequest.id == approval_id,
+                    ApprovalRequest.status == ApprovalState.PENDING.value,
+                )
+                .values(
+                    status=ApprovalState.REJECTED.value,
+                    resolved_at=_now_dt(),
+                    decision="rejected",
+                )
+            )
             session.commit()
-            return self._row_to_record(row)
+            if result.rowcount != 1:
+                raise ApprovalError("Approval is no longer pending")
+            return self.get(approval_id)
 
     def consume(self, approval_id: str) -> None:
         with self._sessions() as session:
-            row = session.get(ApprovalRequest, approval_id)
-            if row is None:
-                raise ApprovalError("Unknown approval id")
-            if row.status != ApprovalState.APPROVED.value:
-                raise ApprovalError(f"Approval is not executable (state={row.status})")
-            row.status = ApprovalState.CONSUMED.value
+            result = session.execute(
+                update(ApprovalRequest)
+                .where(
+                    ApprovalRequest.id == approval_id,
+                    ApprovalRequest.status == ApprovalState.APPROVED.value,
+                )
+                .values(status=ApprovalState.CONSUMED.value)
+            )
             session.commit()
+            if result.rowcount != 1:
+                raise ApprovalError(f"Approval is not executable (id={approval_id})")
 
     # ----------------------------------------------------------------- sweep
     def expire_stale(self) -> int:

@@ -105,8 +105,11 @@ def server(tmp_path_factory):
 def browser():
     from playwright.sync_api import sync_playwright
 
+    # "chrome" drives a real system install (dev hosts); CI overrides with
+    # RUACH_E2E_BROWSER_CHANNEL=chromium after `playwright install chromium`.
+    channel = os.environ.get("RUACH_E2E_BROWSER_CHANNEL", "chrome")
     with sync_playwright() as p:
-        browser = p.chromium.launch(channel="chrome", headless=True)
+        browser = p.chromium.launch(channel=channel, headless=True)
         yield browser
         browser.close()
 

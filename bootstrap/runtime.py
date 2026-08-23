@@ -175,6 +175,28 @@ def _pid_path(run_dir: Path, name: str) -> Path:
     return run_dir / f"{name}.pid"
 
 
+RUNTIME_LOG_MAX_BYTES = 5_000_000  # dev-host default; target values from records
+RUNTIME_LOG_KEEP = 1
+
+
+def rotate_log_if_large(path: Path, echo=print) -> None:
+    """Cap runtime log growth the same way the audit log is capped in spirit:
+    rename (preserve evidence) rather than truncate, keep ONE previous
+    segment, drop older silently — these are diagnostics, not audit
+    evidence, so losing old stdout is acceptable; losing disk space on a
+    phone is not."""
+    try:
+        if path.exists() and path.stat().st_size >= RUNTIME_LOG_MAX_BYTES:
+            backup = path.with_suffix(path.suffix + ".1")
+            if backup.exists():
+                backup.unlink()
+            path.rename(backup)
+            echo(f"[logs] rotated {path.name} (> {RUNTIME_LOG_MAX_BYTES} bytes)")
+    except OSError as error:
+        # Never block startup on rotation trouble; report honestly.
+        echo(f"[logs] rotation skipped for {path.name}: {error}")
+
+
 def _write_pid(run_dir: Path, name: str, pid: int) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     _pid_path(run_dir, name).write_text(str(pid), encoding="utf-8")
@@ -356,6 +378,7 @@ def start(
             )
         server_port = port_of(env.get("RUACH_MODEL_SERVER_URL", "http://127.0.0.1:8080"))
         run_dir.mkdir(parents=True, exist_ok=True)
+        rotate_log_if_large(run_dir / "model_server.log", echo)
         model_log = open(run_dir / "model_server.log", "ab")  # noqa: SIM115 (long-lived subprocess log; closed by shutdown)
         echo(
             f"[start] model runtime : llama-server on 127.0.0.1:{server_port} "
@@ -392,6 +415,7 @@ def start(
 
     run_dir.mkdir(parents=True, exist_ok=True)
     set_lifecycle(run_dir, "STARTING", base_url=base_url)
+    rotate_log_if_large(run_dir / "backend.log", echo)
     backend_log = open(run_dir / "backend.log", "ab")  # noqa: SIM115 (long-lived subprocess log; closed by shutdown)
     echo(f"[start] backend       : uvicorn on {base_url}")
     backend = subprocess.Popen(

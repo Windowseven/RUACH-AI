@@ -1,0 +1,82 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install backend deps + dev tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./backend
+          pip install ruff mypy pytest
+      - name: Ruff
+        run: ruff check --config backend/pyproject.toml backend/app backend/tests bootstrap
+      - name: Mypy (new platform modules)
+        run: mypy --config backend/pyproject.toml bootstrap/probe.py bootstrap/runtime_resolver.py bootstrap/verify.py
+
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e ./backend
+      - name: Backend unit suite
+        run: python -m pytest -q backend/tests --ignore=backend/tests/test_live_orchestration.py
+
+  bootstrap-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e ./backend
+      - name: Bootstrap suite
+        run: python -m pytest -q tests_bootstrap
+
+  ui-and-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Build UI (dev-time only; ships as static files)
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Install backend + e2e extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "./backend[e2e]"
+      - name: Browser E2E against built UI
+        env:
+          RUACH_E2E_BROWSER_CHANNEL: chromium
+        run: |
+          python -m playwright install chromium
+          python -m pytest -q backend/tests/test_frontend_e2e.py
