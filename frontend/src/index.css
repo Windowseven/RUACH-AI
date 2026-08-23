@@ -1,0 +1,37 @@
+@import "tailwindcss";
+
+/* RUACH design tokens (docs/09 §80) mapped into Tailwind v4 theme. */
+@theme {
+  --color-background: #0c0e11;
+  --color-surface: #12151a;
+  --color-surface-elevated: #171b21;
+  --color-edge: #232a33;
+  --color-edge-strong: #2f3945;
+  --color-ink: #e8eaed;
+  --color-ink-muted: #8b949e;
+  --color-ink-faint: #5b636d;
+  --color-accent: #d8a657;
+  --color-accent-dim: #8a6c3c;
+  --color-ok: #6ca86c;
+  --color-warn: #c99a3c;
+  --color-danger: #c25b56;
+
+  --font-ui: -apple-system, "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-display: "Iowan Old Style", "Palatino", Georgia, serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+
+  --radius-sm: 3px;
+  --radius-md: 6px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-ink);
+  font-family: var(--font-ui);
+}

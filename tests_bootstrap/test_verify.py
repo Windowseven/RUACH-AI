@@ -9,13 +9,14 @@ from bootstrap.verify import (
 )
 
 
-def test_stage_list_contains_the_five_deterministic_stages() -> None:
+def test_stage_list_contains_the_six_deterministic_stages() -> None:
     names = [stage.name for stage in build_stages(include_live=False)]
     assert names == [
         "doctor",
         "backend-unit",
         "bootstrap-tests",
         "fresh-install-twice-from-zero",
+        "ui-build",
         "browser-e2e",
     ]
     assert all(stage.command is not None for stage in build_stages(include_live=False))

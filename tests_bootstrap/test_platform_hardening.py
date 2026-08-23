@@ -124,6 +124,7 @@ def test_stage_classification_keeps_core_honest() -> None:
         "backend-unit",
         "bootstrap-tests",
         "fresh-install-twice-from-zero",
+        "ui-build",
         "browser-e2e",
         "live-model-smoke",
     }

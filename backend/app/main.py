@@ -64,9 +64,16 @@ def _expire_stale_approvals() -> None:
     except Exception as exc:  # noqa: BLE001 - observable, non-fatal
         print(f"[startup] approval expiry sweep FAILED: {type(exc).__name__}: {exc}")
 
-FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
-if FRONTEND_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+# UI is the built React app (frontend/ → `npm run build` → frontend/dist).
+# Node is a development-time dependency only; what ships is static files.
+FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
+else:
+    print(
+        "[startup] UI not built: frontend/dist missing. "
+        "Run `npm run build` in frontend/ (dev-time only). API still serves."
+    )
 
 
 if __name__ == "__main__":

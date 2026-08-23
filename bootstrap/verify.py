@@ -34,6 +34,7 @@ class Stage:
     # doctor) depend only on Python + the venv.
     klass: str = "OPTIONAL_DEV"  # CORE | OPTIONAL_DEV | PLATFORM_SPECIFIC | TEST_ONLY
     requires_file: Path | None = None
+    cwd: Path | None = None
 
     def unavailable_reason(self) -> str | None:
         import shutil
@@ -45,11 +46,15 @@ class Stage:
             return "bash not available on this platform"
         if any(arg == "sqlite3" for arg in command) and shutil.which("sqlite3") is None:
             return "sqlite3 CLI not available (dev-only convenience)"
+        if any(arg == "npm" for arg in command) and shutil.which("npm") is None:
+            return "npm not available (UI build is a dev-time step)"
         if self.name == "browser-e2e":
             try:
                 __import__("playwright")
             except ImportError:
                 return "playwright extra not installed (pip install -e '.[e2e]')"
+            if not (ROOT / "frontend" / "dist" / "index.html").is_file():
+                return "UI not built: frontend/dist missing (run npm run build)"
         return None
 
 
@@ -80,6 +85,12 @@ def build_stages(*, include_live: bool) -> list[Stage]:
             requires_file=ROOT / "backend" / "scripts" / "fresh_install_demo.sh",
         ),
         Stage(
+            "ui-build",
+            ["npm", "run", "build"],
+            klass="OPTIONAL_DEV",  # node/npm are dev-time only
+            cwd=ROOT / "frontend",
+        ),
+        Stage(
             "browser-e2e",
             [str(VENV_PY), "-m", "pytest", "-q", "backend/tests/test_frontend_e2e.py"],
             klass="OPTIONAL_DEV",  # needs system Chrome via playwright
@@ -97,7 +108,7 @@ def run_stage(stage: Stage, echo=print) -> bool:
         return True
     echo(f"[{stage.name}] running ({stage.klass}): {' '.join(stage.command or ['<live smoke>'])}")
     started = time.monotonic()
-    result = subprocess.run(stage.command or [], cwd=str(ROOT), check=False)
+    result = subprocess.run(stage.command or [], cwd=str(stage.cwd or ROOT), check=False)
     elapsed = time.monotonic() - started
     ok = result.returncode == 0
     echo(f"[{stage.name}] {'PASS' if ok else 'FAIL'} ({elapsed:.0f}s)")

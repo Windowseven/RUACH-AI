@@ -473,3 +473,24 @@ instrument `./ruach probe` (bootstrap/probe.py) is IMPLEMENTED and MAC
 VERIFIED: stdlib-only, honest statuses per section, JSON records under
 ~/.ruach/benchmarks/. No Termux execution has happened; every target-
 device number remains UNKNOWN until a record comes from the phone.
+
+### Frontend rebuilt on React + Vite + TypeScript + Tailwind (2026-08-23)
+
+The zero-dependency vanilla UI was replaced per product direction. New
+stack: React 19 + Vite 7 + TypeScript (strict) + Tailwind v4; Node is a
+DEVELOPMENT-TIME dependency only — what ships is `frontend/dist` static
+files served by FastAPI, so the Termux runtime story is unchanged.
+
+- API boundary is now typed (`frontend/src/api.ts`), envelope-aware,
+  mirroring docs/06 exactly.
+- Boot screen still reflects REAL /ready states (no fake progress);
+  checklist semantics preserved.
+- Every E2E selector was preserved (#boot-screen, [data-check],
+  .approval-card, .btn-approve/.btn-deny, .tool-activity, composer ids):
+  all 5 browser scenarios pass UNMODIFIED against the new UI.
+- Gate gained the `ui-build` stage (OPTIONAL_DEV; graceful SKIP without
+  npm); browser-e2e now also skips honestly when dist is missing.
+
+Statuses: frontend stack IMPLEMENTED + MAC VERIFIED (E2E vs real
+backend); TERMUX VERIFIED pending target validation. Legacy vanilla UI
+removed from tree (recoverable in git history).
