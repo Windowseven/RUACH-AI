@@ -8,7 +8,14 @@ from app.infrastructure.models import Base
 
 config = context.config
 
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# Production/CLI path: the URL comes from application settings
+# (RUACH_DATABASE_URL). A caller may inject an explicit sqlalchemy.url
+# (fresh-DB gate); in that case it wins and settings are not consulted,
+# keeping the gate hermetic from developer-machine state. The ini's
+# template placeholder counts as "not configured".
+url = config.get_main_option("sqlalchemy.url")
+if not url or url.startswith("driver://"):
+    config.set_main_option("sqlalchemy.url", get_settings().database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

@@ -22,6 +22,32 @@ app.include_router(tools_router, prefix="/api/v1")
 
 
 @app.on_event("startup")
+def _verify_schema() -> None:
+    """P5 gate: the database must ALREADY have the full schema.
+
+    Production schema authority is Alembic (`alembic upgrade head`).
+    Startup NEVER silently repairs missing tables (docs/13 P5 #6/#12):
+    a migration failure must produce a loud boot failure, not a
+    silently self-healing app.
+    """
+    from sqlalchemy import inspect
+
+    from app.config.settings import get_settings
+    from app.infrastructure.db import get_engine
+    from app.infrastructure.models import Base
+
+    engine = get_engine(get_settings().database_url)
+    present = set(inspect(engine).get_table_names())
+    expected = set(Base.metadata.tables)
+    missing = sorted(expected - present - {"alembic_version"})
+    if missing:
+        raise RuntimeError(
+            "Database schema is incomplete; run `alembic upgrade head`. "
+            f"Missing tables: {', '.join(missing)}"
+        )
+
+
+@app.on_event("startup")
 def _expire_stale_approvals() -> None:
     """Startup sweep: stale PENDING approvals become EXPLICITLY EXPIRED.
 

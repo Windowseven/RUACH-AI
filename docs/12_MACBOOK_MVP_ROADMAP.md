@@ -224,3 +224,38 @@ Orphan policy (#13): deleting a conversation SETs conversation_id NULL;
 the row stays auditable, cannot be executed via chat (404), and expires
 by TTL at the latest. Direct tools-API approvals are conversation-less by
 design and resolve only through that endpoint.
+
+## Priority 5 — Fresh Database / Migration Gate (DONE)
+
+Alembic is now the authoritative production schema path. `create_all()`
+survives ONLY in isolated test fixtures (audited: no production call site).
+Startup no longer trusts the database: a new boot hook verifies every ORM
+table exists and FAILS LOUDLY (`run alembic upgrade head` diagnostic)
+instead of silently repairing — a migration failure is a boot failure.
+
+Proofs (backend/tests/test_fresh_database_gate.py, 7 tests): empty DB →
+`alembic upgrade head` → head matches repository head (single-head chain
+asserted); migrated schema compared table-for-table against ORM metadata
+plus directive spot-checks (messages.seq, approval columns, CHECK
+constraint, both indexes, FK ondelete=SET NULL); real app boots against the
+migrated temp DB via the production config mechanism (RUACH_DATABASE_URL,
+isolated workspace+audit paths) with lifespan running; representative E2E:
+conversation → user message → protected request → PENDING approval row in
+SQLite → approve after process restart → CONSUMED + assistant reply; an
+UNMIGRATED db fails startup loudly (RuntimeError, never self-heals);
+newest migration downgrades and re-upgrades cleanly on SQLite; P4 approval
+reconstruction from empty DB (create → restart → resolve) re-proven.
+Single-database integrity (#18): conversations, messages and approvals all
+verified inside the one configured file.
+
+Acceptance demo (#24), scripted and repeatable:
+backend/scripts/fresh_install_demo.sh — two installs from zero in separate
+temp dirs: migrate → verify head → boot → health → conversation → tool
+request → kill server → restart → approve → execution confirmed → schema
+dumps diffed IDENTICAL. "RUACH can reconstruct its persistence layer from
+source-controlled migrations" now has standing evidence.
+
+env.py note: an explicitly injected sqlalchemy.url (gate/tests) wins;
+otherwise settings/RUACH_DATABASE_URL remain the only configuration source.
+Model sampling hardening (/no_think etc.) stays parked for the future
+runtime-hardening phase per senior-dev instruction.
