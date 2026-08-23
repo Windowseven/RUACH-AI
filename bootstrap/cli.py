@@ -417,6 +417,14 @@ def cmd_status(run_dir: Path) -> int:
     return 0 if backend_running else 1
 
 
+def cmd_verify(live: bool) -> int:
+    from bootstrap.verify import verify
+
+    print("RUACH VERIFY — MVP GATE")
+    print("═" * 32)
+    return verify(include_live=live)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ruach", description="RUACH local AI setup tool")
     parser.add_argument("--version", action="version", version=f"ruach {APP_VERSION}")
@@ -466,6 +474,15 @@ def main(argv: list[str] | None = None) -> int:
     status_parser = subparsers.add_parser("status", help="show stack process state")
     status_parser.add_argument("--run-dir", type=Path, default=default_run_dir)
 
+    verify_parser = subparsers.add_parser(
+        "verify", help="run the scripted fresh-environment MVP gate"
+    )
+    verify_parser.add_argument(
+        "--live",
+        action="store_true",
+        help="also run the real-model smoke stage (slow; needs installed model)",
+    )
+
     args = parser.parse_args(argv)
     if args.command == "setup":
         return cmd_setup(
@@ -481,6 +498,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_stop(args.run_dir)
     if args.command == "status":
         return cmd_status(args.run_dir)
+    if args.command == "verify":
+        return cmd_verify(args.live)
     return cmd_doctor()
 
 

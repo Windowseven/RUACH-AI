@@ -317,3 +317,63 @@ Tests: tests_bootstrap/test_runtime.py (8) covers env-file parsing,
 config precedence, honest inference-readiness probing against a fake
 model server (loading-state must NOT pass), stub-stack end-to-end with
 real uvicorn child, double-start refusal, clean stop semantics.
+
+## Security Observation — Malformed Tool Proposal (recorded 2026-08-23)
+
+Observed during real `ruach start` execution: Qwen3-0.6B generated a
+malformed write-tool proposal whose `content` argument was not a valid
+string. Observed behavior:
+
+    Real Model -> Malformed Tool Proposal -> Validation/Policy Boundary
+    -> DENIED -> No Tool Execution
+
+Classification:
+
+- Model/tool-call correctness: FAIL
+- Input validation: PASS
+- Policy enforcement: PASS
+- Fail-closed behavior: PASS
+- Unauthorized execution: NONE
+
+This confirms that malformed model output does not directly reach the tool
+execution layer. This observation must NOT be interpreted as evidence that
+the model's tool-calling reliability is solved. The model can be stupid;
+the system must not be stupid with it. Accordingly, the MVP gate below
+asserts SYSTEM honesty under BOTH branches (well-formed proposal ->
+approval flow; malformed proposal -> explicit denial) and never asserts
+model intelligence.
+
+## Incident 12 — Scripted Fresh-Environment MVP Gate (DONE)
+
+`./ruach verify` is the gate: one command from checkout to proven-working.
+Stages: doctor → backend unit suite → bootstrap suite → twice-from-zero
+migration demo → headless-browser E2E → (with --live) real-model smoke.
+The live smoke asserts SYSTEM honesty under both proposal branches and
+NEVER asserts model intelligence: a well-formed proposal must enter the
+approval flow and only execute after APPROVE; anything else (malformed,
+ineligible, unparseable prose) must leave the filesystem untouched. The
+binding check is filesystem truth (`protected_turn_is_fail_closed`), not
+model wording — "no unauthorized execution" is the invariant; denial
+phrasing is noise.
+
+Two real defects the gate caught immediately:
+
+1. `ruach start` did not migrate a VIRGIN database — it only worked on
+   machines with dev history because the backend (correctly) refuses to
+   boot unmigrated. start() now runs idempotent `alembic upgrade head`
+   (the sole sanctioned schema path) before launching uvicorn. Regression
+   test: start() on an empty DB reaches ready with all tables present.
+2. The first live-smoke classifier trusted denial PHRASES. Qwen phrased
+   an honest fail-closed denial as "took no action" and the gate called
+   it dishonest — proof that string matching is not a security boundary.
+   Rewritten around the execution invariant above.
+
+Full-gate result on this machine: MVP GATE PASSED including the live
+stage (Qwen3-0.6B; round trips slow ~60-70s CPU, one degenerate
+template-echo reply observed — system stayed honest and fail-closed
+throughout; sampling hardening remains parked for the future runtime-
+hardening phase).
+
+MACBOOK MVP GATE: REACHED. Remaining per roadmap: target-device
+validation (docs/11) on Android/Termux — explicitly out of scope until
+senior dev says go.

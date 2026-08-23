@@ -167,6 +167,37 @@ def test_start_stub_stack_end_to_end_then_stop(tmp_path: Path, monkeypatch) -> N
     assert not (run_dir / "backend.pid").exists()
 
 
+def test_start_migrates_a_virgin_database_itself(tmp_path: Path, monkeypatch) -> None:
+    """Fresh install: start() must reach ready WITHOUT any manual migration."""
+    import sqlite3
+
+    root = tmp_path / "install"
+    run_dir = root / "run"
+    monkeypatch.delenv("RUACH_MODEL_RUNTIME", raising=False)
+    extra_env = _install_env(root)
+    db = root / "ruach.db"  # deliberately NOT migrated
+
+    stack = start(
+        config_path=root / "missing.env",
+        run_dir=run_dir,
+        backend_port=_free_port(),
+        stub=True,
+        browser=False,
+        extra_env=extra_env,
+    )
+    try:
+        assert wait_for_backend(stack.base_url, timeout=10.0) is True
+    finally:
+        stop(run_dir=run_dir, echo=lambda *_: None)
+
+    with sqlite3.connect(db) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    assert {"conversations", "messages", "approval_requests", "alembic_version"} <= tables
+
+
 def test_double_start_refused_while_running(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "install"
     run_dir = root / "run"

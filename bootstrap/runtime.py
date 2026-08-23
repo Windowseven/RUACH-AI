@@ -185,6 +185,32 @@ def clear_pid(run_dir: Path, name: str) -> None:
 # ----------------------------------------------------------------- stack
 
 
+def _migrate(env: dict[str, str]) -> None:
+    """Idempotent `alembic upgrade head` — the ONLY sanctioned schema path.
+
+    The backend refuses to boot on an unmigrated database by design (P5);
+    a fresh install therefore migrates here, from source-controlled
+    migrations. Never create_all.
+    """
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(BACKEND_DIR / "alembic.ini"),
+            "upgrade",
+            "head",
+        ],
+        cwd=str(BACKEND_DIR),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise StartError(f"Migration failed:\n{result.stderr[-800:]}")
+
+
 class RuntimeStack:
     def __init__(
         self,
@@ -236,6 +262,8 @@ def start(
     env = merged_environment(load_config(config_path))
     if extra_env:
         env.update(extra_env)
+
+    _migrate(env)
 
     runtime = env.get("RUACH_MODEL_RUNTIME", "llama_cpp")
     model_server: subprocess.Popen | None = None
@@ -313,7 +341,7 @@ def start(
         if not wait_for_backend(base_url, BACKEND_READY_TIMEOUT):
             raise StartError(
                 f"Backend did not report ready within {BACKEND_READY_TIMEOUT:.0f}s. "
-                f"See {run_dir / 'backend.log'.name}: {run_dir / 'backend.log'}"
+                f"See {run_dir / 'backend.log'}"
             )
     except BaseException:
         backend.terminate()
