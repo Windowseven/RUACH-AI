@@ -2,7 +2,6 @@ import io
 import urllib.error
 
 import pytest
-
 from app.application.inference import (
     InferenceFailed,
     InferenceRuntimeUnavailable,

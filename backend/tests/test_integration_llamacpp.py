@@ -1,7 +1,6 @@
 import os
 
 import pytest
-
 from app.config.settings import get_settings
 from app.infrastructure.inference_llamacpp import LlamaCppAdapter
 
