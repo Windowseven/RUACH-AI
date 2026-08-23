@@ -46,7 +46,11 @@ def get_tool_engine() -> ToolEngine:
         approvals = PersistentApprovalStore(
             sessions, ttl_seconds=settings.approval_ttl_seconds
         )
-        audit = AuditLog(Path(settings.audit_log_path))
+        audit = AuditLog(
+            Path(settings.audit_log_path),
+            max_bytes=settings.audit_max_bytes,
+            retention_segments=settings.audit_retention_segments,
+        )
         _engine = ToolEngine(boundary, approvals, audit)
         # Explicit transition for anything stale across restarts (docs/13 P4).
         _engine.expire_stale_approvals()

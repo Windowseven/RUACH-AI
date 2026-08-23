@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     database_busy_timeout_ms: int = 5000
     workspace_path: Path = Field(default_factory=_default_workspace_path)
     audit_log_path: Path = Field(default_factory=_default_audit_log_path)
+    audit_max_bytes: int = 5_000_000
+    audit_retention_segments: int = 2
 
 
 @lru_cache

@@ -320,11 +320,8 @@ def _applied_migration(db_path: Path) -> str | None:
 
 
 def _check_runtime_config() -> bool:
-    from bootstrap.runtime import (
-        DEFAULT_CONFIG_PATH,
-        LLAMA_SERVER_BIN,
-        load_config,
-    )
+    from bootstrap.runtime import DEFAULT_CONFIG_PATH, load_config
+    from bootstrap.runtime_resolver import resolve_llama_server
 
     healthy = True
     config = {}
@@ -345,8 +342,18 @@ def _check_runtime_config() -> bool:
         healthy &= _check(
             "Model artifact", model_ok, str(model_path) if model_ok else f"missing: {model_path}"
         )
-        binary_ok = LLAMA_SERVER_BIN.is_file() and os.access(LLAMA_SERVER_BIN, os.X_OK)
-        healthy &= _check("llama-server binary", binary_ok, str(LLAMA_SERVER_BIN))
+        resolved = resolve_llama_server(
+            explicit=os.environ.get("RUACH_LLAMA_SERVER_BIN") or config.get(
+                "RUACH_LLAMA_SERVER_BIN"
+            ),
+        )
+        healthy &= _check(
+            "llama-server binary",
+            resolved.found,
+            str(resolved.path) + f" (source: {resolved.source})"
+            if resolved.found
+            else "not found in config/user/project/PATH",
+        )
     else:
         healthy &= _check("Model runtime", True, runtime)
 
@@ -392,6 +399,13 @@ def cmd_start(
     print("Press Ctrl+C to stop.")
     try:
         stack.backend.wait()
+        if stack.backend.returncode not in (0, None):
+            from bootstrap.runtime import record_failed
+
+            record_failed(
+                stack.run_dir,
+                f"backend exited with code {stack.backend.returncode}",
+            )
     except KeyboardInterrupt:
         print()
     finally:

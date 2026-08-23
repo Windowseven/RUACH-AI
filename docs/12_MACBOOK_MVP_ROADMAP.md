@@ -377,3 +377,91 @@ hardening phase).
 MACBOOK MVP GATE: REACHED. Remaining per roadmap: target-device
 validation (docs/11) on Android/Termux — explicitly out of scope until
 senior dev says go.
+
+## SEQUENCE CORRECTION (2026-08-23)
+
+The earlier "MACBOOK MVP GATE: REACHED" line was PREMATURE: the MVP
+definition includes audit retention and a filesystem security review,
+which did not exist yet. Retracted. Termux remains the TARGET VALIDATION
+environment; the MacBook is the DEVELOPMENT environment. No Termux work
+starts until every Mac-side requirement reaches Definition of Done.
+Reporting now follows the evidence discipline: IMPLEMENTED / MAC VERIFIED
+/ TERMUX VERIFIED / UNKNOWN — never "Mac verified" as evidence of "Termux
+verified".
+
+### Security hardening delivered this phase
+
+**Audit-log retention (P11A) — IMPLEMENTED, MAC VERIFIED.** Size-based
+rotation (default 5 MB active segment), N retained rotated segments
+(default 2), oldest segment deleted only at the DOCUMENTED retention
+boundary; rotation renames evidence, never truncates; `read_all` spans
+segments chronologically; any write/stat failure raises AuditWriteError
+so tool operations FAIL CLOSED rather than execute unlogged. Settings:
+RUACH_AUDIT_MAX_BYTES / RUACH_AUDIT_RETENTION_SEGMENTS.
+
+**Filesystem TOCTOU/symlink review (P11B) — IMPLEMENTED, MAC VERIFIED.**
+The validate-then-open race is closed at the kernel level: workspace root
+fd pinned at construction; every intermediate component opened
+O_NOFOLLOW|O_DIRECTORY (ELOOP -> policy denial); final opens use
+O_NOFOLLOW, unlinks use follow_symlinks=False; writes create 0600 files;
+symlink escape attempts are refused even when planted after the
+policy-time check (tested by simulating the swap race). Honest residual
+limitations, documented not hidden: real-directory swaps stay inside the
+workspace by construction; approval binds argument STRINGS not inodes;
+hardlink escapes require out-of-model write access (out of scope).
+
+**RuntimeResolver (P12 §7) — IMPLEMENTED, MAC VERIFIED, TERMUX PENDING.**
+Hardcoded `.build/runtime/llama-server` removed from orchestration.
+Resolution order: RUACH_LLAMA_SERVER_BIN -> ~/.ruach/runtime/ ->
+project-local .build/runtime/ -> PATH. Platform differences come from
+$HOME and PATH, not from platform branches in application code.
+
+**Process lifecycle (P12 §9) — IMPLEMENTED, MAC VERIFIED, TERMUX
+UNKNOWN.** STARTING/HEALTHY/UNRESPONSIVE/STOPPING/STOPPED/FAILED recorded
+in a state file; `status` combines PID liveness with an HTTP readiness
+probe — an alive PID alone is explicitly NOT health proof. No speculative
+Android process hacks.
+
+**Timeouts (P12 §10) — IMPLEMENTED, MAC VERIFIED.**
+RUACH_MODEL_READY_TIMEOUT_SECONDS / RUACH_BACKEND_READY_TIMEOUT_SECONDS
+tunable; current defaults are DEVELOPMENT-HOST values. Target-device
+defaults will come from real benchmarks — not guessed.
+
+**./ruach verify dependency audit (P12 §8) — IMPLEMENTED.** Stage
+classification: doctor=CORE (stdlib only); backend-unit/bootstrap-tests=
+TEST_ONLY; fresh-install demo=PLATFORM_SPECIFIC (bash+sqlite3 CLI+mktemp,
+dev convenience); browser-e2e=OPTIONAL_DEV (playwright+Chrome); live smoke
+=OPTIONAL_DEV (needs built runtime+model). Missing conveniences now SKIP
+with reasons instead of failing. CORE product commands (start/stop/
+status/doctor) depend only on Python + venv.
+
+### MacBook MVP checklist (§14) — current truth
+
+| Requirement | Status |
+|---|---|
+| ./ruach start orchestration | MAC VERIFIED |
+| Backend starts correctly | MAC VERIFIED |
+| Inference runtime starts correctly | MAC VERIFIED |
+| Model loads | MAC VERIFIED |
+| Browser UI works | MAC VERIFIED |
+| Real chat works | MAC VERIFIED |
+| Multi-turn works | MAC VERIFIED |
+| Tool proposal works | MAC VERIFIED (model correctness NOT implied) |
+| Policy works | MAC VERIFIED |
+| Approval works (persist/restart/TTL) | MAC VERIFIED |
+| Tool execution works | MAC VERIFIED |
+| Rejection works | MAC VERIFIED |
+| Persistence works | MAC VERIFIED |
+| Restart recovery works | MAC VERIFIED |
+| Migrations from empty DB | MAC VERIFIED |
+| Security boundaries work | MAC VERIFIED |
+| Frontend E2E passes | MAC VERIFIED |
+| Startup/shutdown lifecycle works | MAC VERIFIED |
+| Audit logging works | MAC VERIFIED |
+| Audit retention policy implemented | MAC VERIFIED (this phase) |
+| Filesystem security review completed | MAC VERIFIED (this phase) |
+| Documentation reflects actual behavior | IN PROGRESS (this update) |
+
+Remaining before re-declaring the MacBook gate: full `./ruach verify`
+rerun on the hardened code, then Target Device Readiness Gate DESIGN
+(measurements only — no guessing).

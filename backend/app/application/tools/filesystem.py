@@ -1,8 +1,13 @@
-"""Bounded filesystem executor using direct OS APIs, never shell strings (docs/05 §12–§13)."""
+"""Bounded filesystem executor using direct OS APIs, never shell strings (docs/05 §12–§13).
+
+All path mechanics go through WorkspaceBoundary's dirfd walk (P11B):
+symlinks are never followed and opens are race-hardened at the kernel
+level. Size caps and type checks remain here as policy.
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
 from typing import Any
 
 from .paths import WorkspaceBoundary
@@ -24,11 +29,13 @@ class FilesystemExecutor:
         self._max_write = max_write_bytes
 
     def read_file(self, arguments: dict[str, Any]) -> str:
-        path = self._require_resolved(arguments)
+        raw = self._require_string_path(arguments)
         offset = self._bounded_int(arguments.get("offset", 0), "offset")
         raw_limit = arguments.get("limit")
         if raw_limit is None:
-            remaining = max(path.stat().st_size - offset, 0)
+            probe_fd, stat = self._boundary.open_read(raw)
+            remaining = max(stat.st_size - offset, 0)
+            os.close(probe_fd)
             if remaining > self._max_read:
                 raise ValueError(f"File exceeds the {self._max_read} byte read cap")
             limit = remaining
@@ -36,43 +43,59 @@ class FilesystemExecutor:
             limit = self._bounded_int(raw_limit, "limit")
             if limit > self._max_read:
                 raise ValueError(f"Read limit exceeds {self._max_read} bytes")
-        with path.open("rb") as handle:
-            handle.seek(offset)
-            data = handle.read(limit)
+        fd, _stat = self._boundary.open_read(raw)
+        try:
+            if offset:
+                os.lseek(fd, offset, os.SEEK_SET)
+            data = b""
+            while len(data) < limit:
+                chunk = os.read(fd, min(65536, limit - len(data)))
+                if not chunk:
+                    break
+                data += chunk
+        finally:
+            os.close(fd)
         return data.decode("utf-8", errors="replace")
 
     def list_directory(self, arguments: dict[str, Any]) -> list[str]:
-        path = self._require_resolved(arguments)
-        entries = sorted(entry.name for entry in path.iterdir())
+        entries = self._boundary.list_dir(self._require_string_path(arguments))
         if len(entries) > MAX_LIST_ENTRIES:
             raise ValueError(f"Directory has more than {MAX_LIST_ENTRIES} entries")
         return entries
 
     def write_file(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        path = self._require_resolved(arguments)
+        raw = self._require_string_path(arguments)
         content = arguments.get("content")
         if not isinstance(content, str):
             raise ValueError("Content must be a string")  # noqa: TRY004 - untrusted input contract
         data = content.encode("utf-8")
         if len(data) > self._max_write:
             raise ValueError(f"Write exceeds {self._max_write} byte limit")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as handle:
-            handle.write(content)
-        return {"written_bytes": len(data)}
+        fd = self._boundary.open_write(raw)
+        try:
+            written = 0
+            while written < len(data):
+                written += os.write(fd, data[written:])
+        finally:
+            os.close(fd)
+        return {"written_bytes": written}
 
     def delete_file(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        path = self._require_resolved(arguments)
-        if not path.is_file():
-            raise FileNotFoundError("Target is not a regular file")
-        path.unlink()
+        raw = self._require_string_path(arguments)
+        try:
+            self._boundary.unlink_file(raw)
+        except FileNotFoundError as error:
+            raise FileNotFoundError("Target is not a regular file") from error
         return {"deleted": True}
 
-    def _require_resolved(self, arguments: dict[str, Any]) -> Path:
+    def _require_string_path(self, arguments: dict[str, Any]) -> str:
         raw = arguments.get("path")
         if not isinstance(raw, str):
             raise ValueError("A string 'path' argument is required")  # noqa: TRY004
-        return self._boundary.resolve_within(raw)
+        # Policy-level containment for audit/policy; execution re-derives
+        # independently through the dirfd walk.
+        self._boundary.resolve_within(raw)
+        return raw
 
     @staticmethod
     def _bounded_int(value: Any, name: str) -> int:

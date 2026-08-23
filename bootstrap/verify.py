@@ -29,12 +29,35 @@ VENV_PY = ROOT / ".venv" / "bin" / "python"
 class Stage:
     name: str
     command: list[str] | None  # None => python function stage (live)
+    # P12 §8 dependency classification. CORE functionality must never
+    # depend on a desktop-only convenience; the gate stages below are all
+    # development tools — the CORE product commands (start/stop/status/
+    # doctor) depend only on Python + the venv.
+    klass: str = "OPTIONAL_DEV"  # CORE | OPTIONAL_DEV | PLATFORM_SPECIFIC | TEST_ONLY
     requires_file: Path | None = None
+
+    def unavailable_reason(self) -> str | None:
+        import shutil
+
+        if self.requires_file is not None and not self.requires_file.is_file():
+            return f"missing {self.requires_file.name}"
+        command = self.command or []
+        if "bash" in command and shutil.which("bash") is None:
+            return "bash not available on this platform"
+        if any(arg == "sqlite3" for arg in command):
+            if shutil.which("sqlite3") is None:
+                return "sqlite3 CLI not available (dev-only convenience)"
+        if self.name == "browser-e2e":
+            try:
+                __import__("playwright")  # noqa: F401
+            except ImportError:
+                return "playwright extra not installed (pip install -e '.[e2e]')"
+        return None
 
 
 def build_stages(*, include_live: bool) -> list[Stage]:
     stages = [
-        Stage("doctor", [str(ROOT / "ruach"), "doctor"]),
+        Stage("doctor", [str(ROOT / "ruach"), "doctor"], klass="CORE"),
         Stage(
             "backend-unit",
             [
@@ -45,32 +68,38 @@ def build_stages(*, include_live: bool) -> list[Stage]:
                 "backend/tests",
                 "--ignore=backend/tests/test_live_orchestration.py",
             ],
+            klass="TEST_ONLY",
         ),
-        Stage("bootstrap-tests", [str(VENV_PY), "-m", "pytest", "-q", "tests_bootstrap"]),
+        Stage(
+            "bootstrap-tests",
+            [str(VENV_PY), "-m", "pytest", "-q", "tests_bootstrap"],
+            klass="TEST_ONLY",
+        ),
         Stage(
             "fresh-install-twice-from-zero",
             ["bash", "backend/scripts/fresh_install_demo.sh"],
+            klass="PLATFORM_SPECIFIC",  # bash + sqlite3 CLI + mktemp
             requires_file=ROOT / "backend" / "scripts" / "fresh_install_demo.sh",
         ),
         Stage(
             "browser-e2e",
             [str(VENV_PY), "-m", "pytest", "-q", "backend/tests/test_frontend_e2e.py"],
+            klass="OPTIONAL_DEV",  # needs system Chrome via playwright
         ),
     ]
     if include_live:
-        stages.append(Stage("live-model-smoke", None))
+        stages.append(Stage("live-model-smoke", None, klass="OPTIONAL_DEV"))
     return stages
 
 
 def run_stage(stage: Stage, echo=print) -> bool:
-    if stage.requires_file is not None and not stage.requires_file.is_file():
-        echo(f"[{stage.name}] SKIP (missing {stage.requires_file.name})")
+    reason = stage.unavailable_reason()
+    if reason is not None:
+        echo(f"[{stage.name}] SKIP ({reason})")
         return True
-    echo(f"[{stage.name}] running: {' '.join(stage.command or ['<live smoke>'])}")
+    echo(f"[{stage.name}] running ({stage.klass}): {' '.join(stage.command or ['<live smoke>'])}")
     started = time.monotonic()
-    result = subprocess.run(
-        stage.command or [], cwd=str(ROOT), check=False
-    )
+    result = subprocess.run(stage.command or [], cwd=str(ROOT), check=False)
     elapsed = time.monotonic() - started
     ok = result.returncode == 0
     echo(f"[{stage.name}] {'PASS' if ok else 'FAIL'} ({elapsed:.0f}s)")

@@ -1,16 +1,27 @@
-"""Runtime bring-up for `ruach start` (roadmap row 11).
+"""Runtime bring-up for `ruach start` (roadmap row 11, P12 §9–§10).
 
-Loads the generated env config (~/.ruach/config/ruach.env), spawns the
-model runtime when configured, launches uvicorn serving UI+API, and
-verifies readiness HONESTLY:
+Loads the generated env config (~/.ruach/config/ruach.env), resolves the
+model runtime through RuntimeResolver (no hardcoded paths), spawns it
+when configured, launches uvicorn serving UI+API, and verifies readiness
+HONESTLY:
 
 - llama-server /health can report ok while the model is still loading,
   so inference readiness is proven by a real one-token completion.
 - backend readiness is the same endpoint the boot screen uses
   (GET /api/v1/ready -> data.status == "ready"), not a bare TCP check.
 
-Stdlib-only. Process state lives in small PID files so `stop`/`status`
-work from any shell.
+Process lifecycle (P12 §9): a lifecycle state file records
+STARTING -> HEALTHY -> STOPPING -> STOPPED / FAILED transitions; `status`
+combines that with live PID liveness and an HTTP probe. PIDs are never
+trusted as proof of health — environments exist where processes can be
+terminated unexpectedly.
+
+Timeouts (P12 §10): defaults are DEVELOPMENT-HOST values, tunable via
+RUACH_MODEL_READY_TIMEOUT_SECONDS / RUACH_BACKEND_READY_TIMEOUT_SECONDS.
+Target-device defaults will be set from real benchmarks later — they are
+NOT guessed here.
+
+Stdlib-only.
 """
 
 from __future__ import annotations
@@ -27,14 +38,27 @@ import webbrowser
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from bootstrap.runtime_resolver import (
+    configured_binary_override,
+    resolve_llama_server,
+)
+
 ROOT = Path(__file__).resolve().parent.parent
 BACKEND_DIR = ROOT / "backend"
-LLAMA_SERVER_BIN = ROOT / ".build" / "runtime" / "llama-server"
 DEFAULT_CONFIG_PATH = Path.home() / ".ruach" / "config" / "ruach.env"
 DEFAULT_RUN_DIR = Path.home() / ".ruach" / "run"
 
+# Development-host defaults; benchmark-derived target defaults come later.
 INFERENCE_READY_TIMEOUT = 180.0
 BACKEND_READY_TIMEOUT = 60.0
+
+
+def _timeout(env: dict[str, str], key: str, default: float) -> float:
+    try:
+        value = float(env.get(key, ""))
+        return value if value > 0 else default
+    except ValueError:
+        return default
 
 
 class StartError(RuntimeError):
@@ -182,6 +206,47 @@ def clear_pid(run_dir: Path, name: str) -> None:
     _pid_path(run_dir, name).unlink(missing_ok=True)
 
 
+# ------------------------------------------------------------- lifecycle
+
+LIFECYCLE_STATES = ("STARTING", "HEALTHY", "STOPPING", "STOPPED", "FAILED")
+
+
+def set_lifecycle(
+    run_dir: Path,
+    state: str,
+    detail: str = "",
+    *,
+    base_url: str | None = None,
+) -> None:
+    if state not in LIFECYCLE_STATES:
+        raise ValueError(f"unknown lifecycle state: {state}")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    payload = {"state": state, "detail": detail}
+    if base_url is not None:
+        payload["base_url"] = base_url
+    previous = read_lifecycle(run_dir)
+    if not base_url and previous.get("base_url"):
+        payload["base_url"] = previous["base_url"]
+    payload["at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    (run_dir / "state.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def read_lifecycle(run_dir: Path) -> dict[str, str]:
+    path = run_dir / "state.json"
+    if not path.is_file():
+        return {"state": "STOPPED", "detail": "never started here", "at": "", "base_url": ""}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return {"state": "STOPPED", "detail": "unreadable state file", "at": "", "base_url": ""}
+    return {
+        "state": str(data.get("state", "STOPPED")),
+        "detail": str(data.get("detail", "")),
+        "at": str(data.get("at", "")),
+        "base_url": str(data.get("base_url", "")),
+    }
+
+
 # ----------------------------------------------------------------- stack
 
 
@@ -278,19 +343,27 @@ def start(
             raise StartError(
                 f"Model file not found: {model_path}. Run `./ruach setup --install-model`."
             )
-        if not LLAMA_SERVER_BIN.is_file() or not os.access(LLAMA_SERVER_BIN, os.X_OK):
+        resolved = resolve_llama_server(
+            explicit=configured_binary_override(env),
+            project_root=ROOT,
+        )
+        if not resolved.found:
             raise StartError(
-                f"llama-server binary missing at {LLAMA_SERVER_BIN}. "
-                "Build llama.cpp first (docs/12 Priority 8)."
+                "llama-server binary not found. Searched: RUACH_LLAMA_SERVER_BIN, "
+                "~/.ruach/runtime/, .build/runtime/, PATH. "
+                "Build llama.cpp or set RUACH_LLAMA_SERVER_BIN (docs/12 Priority 8)."
             )
         server_port = port_of(env.get("RUACH_MODEL_SERVER_URL", "http://127.0.0.1:8080"))
         run_dir.mkdir(parents=True, exist_ok=True)
         model_log = open(run_dir / "model_server.log", "ab")
-        echo(f"[start] model runtime : llama-server on 127.0.0.1:{server_port}")
+        echo(
+            f"[start] model runtime : llama-server on 127.0.0.1:{server_port} "
+            f"(resolved: {resolved.source})"
+        )
         echo(f"[start] model         : {model_path.name} (loading; honest readiness probe)")
         model_server = subprocess.Popen(
             [
-                str(LLAMA_SERVER_BIN),
+                str(resolved.path),
                 "-m",
                 str(model_path),
                 "--host",
@@ -306,7 +379,7 @@ def start(
         _write_pid(run_dir, "model_server", model_server.pid)
         if not wait_for_inference(
             env.get("RUACH_MODEL_SERVER_URL", "http://127.0.0.1:8080"),
-            INFERENCE_READY_TIMEOUT,
+            _timeout(env, "RUACH_MODEL_READY_TIMEOUT_SECONDS", INFERENCE_READY_TIMEOUT),
         ):
             model_server.terminate()
             clear_pid(run_dir, "model_server")
@@ -317,6 +390,7 @@ def start(
     base_url = f"http://{host}:{port}"
 
     run_dir.mkdir(parents=True, exist_ok=True)
+    set_lifecycle(run_dir, "STARTING", base_url=base_url)
     backend_log = open(run_dir / "backend.log", "ab")
     echo(f"[start] backend       : uvicorn on {base_url}")
     backend = subprocess.Popen(
@@ -338,7 +412,11 @@ def start(
     _write_pid(run_dir, "backend", backend.pid)
 
     try:
-        if not wait_for_backend(base_url, BACKEND_READY_TIMEOUT):
+        if not wait_for_backend(
+            base_url,
+            _timeout(env, "RUACH_BACKEND_READY_TIMEOUT_SECONDS", BACKEND_READY_TIMEOUT),
+        ):
+            set_lifecycle(run_dir, "FAILED", "backend never reported ready")
             raise StartError(
                 f"Backend did not report ready within {BACKEND_READY_TIMEOUT:.0f}s. "
                 f"See {run_dir / 'backend.log'}"
@@ -350,6 +428,8 @@ def start(
             model_server.terminate()
             clear_pid(run_dir, "model_server")
         raise
+
+    set_lifecycle(run_dir, "HEALTHY", base_url=base_url)
 
     if browser:
         try:
@@ -385,21 +465,55 @@ def _terminate_by_pid(run_dir: Path, name: str) -> str:
 
 
 def stop(run_dir: Path = DEFAULT_RUN_DIR, echo=print) -> int:
+    set_lifecycle(run_dir, "STOPPING")
     backend_state = _terminate_by_pid(run_dir, "backend")
     model_state = _terminate_by_pid(run_dir, "model_server")
+    set_lifecycle(run_dir, "STOPPED")
     echo(f"[stop] backend      : {backend_state}")
     echo(f"[stop] model server : {model_state}")
     return 0
 
 
+def record_failed(run_dir: Path, detail: str) -> None:
+    set_lifecycle(run_dir, "FAILED", detail)
+
+
 def status(run_dir: Path = DEFAULT_RUN_DIR) -> dict[str, object]:
+    """Liveness + lifecycle. A live PID alone is NOT proof of health."""
+    backend_pid = read_pid(run_dir, "backend")
+    model_pid = read_pid(run_dir, "model_server")
+    lifecycle = read_lifecycle(run_dir)
+    state = str(lifecycle["state"])
+
+    pid_alive = _alive(backend_pid)
+    responsive: bool | None = None
+    base_url = lifecycle["base_url"]
+    if pid_alive and state in {"STARTING", "HEALTHY"} and base_url:
+        code, body = _http_json(f"{base_url.rstrip('/')}/api/v1/ready", timeout=2.0)
+        ready = code == 200 and isinstance(body, dict) and isinstance(
+            body.get("data"), dict
+        )
+        responsive = ready
+        if state == "HEALTHY" and not ready:
+            # Process alive but the product is not answering honestly.
+            state = "UNRESPONSIVE"
+        elif state == "STARTING":
+            state = "HEALTHY" if ready else "STARTING"
+
     return {
+        "lifecycle": {
+            "state": state,
+            "detail": lifecycle["detail"],
+            "at": lifecycle["at"],
+            "responsive": responsive,
+        },
         "backend": {
-            "pid": read_pid(run_dir, "backend"),
-            "running": _alive(read_pid(run_dir, "backend")),
+            "pid": backend_pid,
+            "process_alive": pid_alive,
+            "running": pid_alive and state in {"STARTING", "HEALTHY"},
         },
         "model_server": {
-            "pid": read_pid(run_dir, "model_server"),
-            "running": _alive(read_pid(run_dir, "model_server")),
+            "pid": model_pid,
+            "running": _alive(model_pid),
         },
     }
