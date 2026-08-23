@@ -497,6 +497,18 @@ def main(argv: list[str] | None = None) -> int:
         help="also run the real-model smoke stage (slow; needs installed model)",
     )
 
+    probe_parser = subparsers.add_parser(
+        "probe",
+        help="record an honest device-readiness benchmark (stdlib-only; runs on any host)",
+    )
+    probe_parser.add_argument(
+        "--inference-url",
+        default="",
+        help="running llama-server URL (default: generated config / skip)",
+    )
+    probe_parser.add_argument("--quick", type=int, default=5, help="one-token completions")
+    probe_parser.add_argument("--real", type=int, default=3, help="64-token completions")
+
     args = parser.parse_args(argv)
     if args.command == "setup":
         return cmd_setup(
@@ -514,6 +526,15 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_status(args.run_dir)
     if args.command == "verify":
         return cmd_verify(args.live)
+    if args.command == "probe":
+        from bootstrap.probe import run_probe
+
+        run_probe(
+            inference_url=args.inference_url,
+            quick=args.quick,
+            real=args.real,
+        )
+        return 0
     return cmd_doctor()
 
 

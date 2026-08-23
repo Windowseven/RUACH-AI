@@ -465,3 +465,11 @@ status/doctor) depend only on Python + venv.
 Remaining before re-declaring the MacBook gate: full `./ruach verify`
 rerun on the hardened code, then Target Device Readiness Gate DESIGN
 (measurements only — no guessing).
+
+### Target Device Readiness Gate — defined (2026-08-23)
+
+docs/13_TARGET_READINESS_GATE.md freezes the measurement plan. The
+instrument `./ruach probe` (bootstrap/probe.py) is IMPLEMENTED and MAC
+VERIFIED: stdlib-only, honest statuses per section, JSON records under
+~/.ruach/benchmarks/. No Termux execution has happened; every target-
+device number remains UNKNOWN until a record comes from the phone.
