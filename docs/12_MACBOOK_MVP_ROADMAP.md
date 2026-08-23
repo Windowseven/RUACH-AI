@@ -158,6 +158,23 @@ Release                  NOT STARTED
 | 11 | Full `./ruach start` wiring: load generated env config, spawn llama-server if configured, launch uvicorn serving UI+API, health checks; doctor upgrades | CLI DoD |
 | 12 | Scripted fresh-environment E2E test = **MACBOOK MVP GATE**; then resume target validation (docs/11) on the phone | Gate |
 
+## Priority 3 — Multi-Turn Conversation (DONE)
+
+Layering enforced: route -> ConversationService -> ConversationRepository /
+MessageRepository -> ContextBuilder(RecentMessagesStrategy) -> InferencePort.
+Bounded window via RUACH_CONTEXT_MAX_MESSAGES (default 12); system instructions
+are code-owned; tool results persist into history (bounded preview) and flow
+back to the model. Migration c3d7e1a9f2b4 adds messages(conversation_id, seq)
+index + conversations.updated_at.
+
+Proofs: tests/test_memory.py T1-T7 (continuity, coreference, tool context,
+isolation, boundary, restart, malicious-history inertness) + live suite 5/5
+with the real Qwen model incl. name recall and cross-turn read. Acceptance
+demo executed over HTTP against the live stack.
+
+Honest claim (docs/13 §30): RUACH has persistent multi-turn conversation
+context. NOT long-term semantic memory.
+
 Rules that continue to apply: no architectural pivots without evidence; no
 "complete" claims without running user-flow proof; target-device facts only
 from the device.

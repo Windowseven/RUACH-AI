@@ -1,7 +1,9 @@
 """Conversation orchestrator.
 
-Connects inference to the tool engine using an explicit, auditable
-protocol (docs/12, Increments 9/10):
+Turn logic only: parse proposals, consult the Tool Engine, produce final
+replies. Prompt ASSEMBLY (system instructions + bounded history) lives in
+app.application.context and is performed before this module is called.
+
 
 1. Every model turn carries a system preamble describing the available
    capabilities and the request format.
@@ -28,67 +30,28 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.application.context import USER_SENTINEL
 from app.application.inference import InferencePort
 from app.application.tools.engine import ToolEngine
-from app.application.tools.policy import CAPABILITY_RISK
-from app.application.tools.schemas import RiskLevel, ToolRequest
+from app.application.tools.schemas import ToolRequest
 
 REQUEST_PATTERN = re.compile(
     r"<tool_request>\s*(\{.*?\})\s*</tool_request>", re.DOTALL
 )
 REQUEST_TAG_PATTERN = re.compile(r"<tool_request>[\s\S]*?</tool_request>")
-
-PREAMBLE_TEMPLATE = """You are RUACH, a local AI workspace. You may use tools by \
-emitting exactly one request block:
-
-<tool_request>{{"tool": "<tool name>", "capability": "<capability>", \
-"arguments": {{...}}}}</tool_request>
-
-Available capabilities:
-{capabilities}
-
-Rules:
-- Emit a request block ONLY when the user's intent requires a tool.
-- Never invent capabilities. Use only the ones listed above.
-- Paths are relative to the user's workspace.
-- Destructive actions always require explicit human approval; do not \
-claim an action succeeded before its result is returned to you.
-- When you do not need a tool, answer in plain prose without any block.
-
-Examples of correct behaviour:
-
-User message: read notes.txt
-Correct output:
-<tool_request>{{"tool": "filesystem", "capability": "filesystem.read", "arguments": {{"path": "notes.txt"}}}}</tool_request>
-
-User message: list my files
-Correct output:
-<tool_request>{{"tool": "filesystem", "capability": "filesystem.list", "arguments": {{"path": "."}}}}</tool_request>
-
-User message: What is the capital of France?
-Correct output:
-Paris is the capital of France.
-
-Emit exactly one block or plain prose - never both, never any other format."""
-
-USER_SENTINEL = "### USER MESSAGE ###"
-
-
-def _capabilities_block() -> str:
-    lines = []
-    for capability, risk in sorted(CAPABILITY_RISK.items()):
-        marker = " (requires human approval)" if risk >= RiskLevel.DESTRUCTIVE else ""
-        lines.append(f"- {capability}{marker}")
-    return "\n".join(lines)
-
-
-def build_prompt(user_message: str) -> str:
-    preamble = PREAMBLE_TEMPLATE.format(capabilities=_capabilities_block())
-    return f"{preamble}\n\n{USER_SENTINEL}\n{user_message}"
+REQUEST_OPEN_TAG = re.compile(r"<tool_request>")
 
 
 def has_request_block(text: str) -> bool:
     return REQUEST_TAG_PATTERN.search(text) is not None
+
+
+def _looks_like_broken_proposal(text: str) -> bool:
+    """A block that opened but never closed (truncation) or closed without
+    well-formed JSON inside. Safe: none of these execute."""
+    if REQUEST_TAG_PATTERN.search(text) is None and REQUEST_OPEN_TAG.search(text):
+        return True
+    return parse_tool_request(text) is None and has_request_block(text)
 
 
 def parse_tool_request(text: str) -> dict[str, Any] | None:
@@ -134,6 +97,7 @@ class TurnResult:
     tool_state: str = ""  # "" | "COMPLETED" | "DENIED" | "REJECTED" | "FAILED"
     tool_capability: str = ""
     tool_arguments: dict[str, Any] = field(default_factory=dict)
+    tool_result_preview: str = ""  # bounded result text for context/history
 
 
 def _proposal_from_payload(payload: dict[str, Any]) -> ToolRequest | None:
@@ -156,6 +120,14 @@ def _continuation_prompt(capability: str, outcome_json: str) -> str:
     )
 
 
+def _preview(output: Any, limit: int = 400) -> str:
+    try:
+        text = output if isinstance(output, str) else json.dumps(output)
+    except (TypeError, ValueError):
+        text = repr(output)
+    return text[:limit]
+
+
 def _clean(text: str) -> str:
     cleaned = text.replace(USER_SENTINEL, "").strip()
     return cleaned or "(empty response)"
@@ -168,10 +140,14 @@ def run_turn(
     inference: InferencePort,
     engine: ToolEngine,
     approvals: ApprovalIndex,
-    user_message: str,
+    prompt: str,
     conversation_id: str = "",
 ) -> TurnResult:
-    first = inference.complete(build_prompt(user_message))
+    first = inference.complete(prompt)
+    if _looks_like_broken_proposal(first):
+        # Disciplined single resample for degenerate/truncated proposals.
+        # Never a bypass: whatever comes back goes through the same parser.
+        first = inference.complete(prompt)
     payload = parse_tool_request(first)
     if payload is None:
         if has_request_block(first):
@@ -186,6 +162,7 @@ def run_turn(
     common: dict[str, Any] = {
         "tool_capability": request.capability,
         "tool_arguments": dict(request.arguments),
+        "tool_result_preview": _preview(outcome.output),
     }
     if outcome.state == "COMPLETED":
         final = inference.complete(
@@ -247,7 +224,14 @@ def resolve_decision(
         final = inference.complete(
             _continuation_prompt(capability, json.dumps(outcome.output))
         )
-        return TurnResult(kind="reply", reply=_clean(final), tool_state="COMPLETED")
+        return TurnResult(
+            kind="reply",
+            reply=_clean(final),
+            tool_state="COMPLETED",
+            tool_capability=capability,
+            tool_arguments={},
+            tool_result_preview=_preview(outcome.output),
+        )
     if outcome.state == "REJECTED":
         return TurnResult(
             kind="reply",

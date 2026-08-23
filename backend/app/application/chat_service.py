@@ -1,22 +1,35 @@
-import json
+"""Conversation service (Priority 3).
+
+Owns the chat turn flow. FastAPI routes stay thin; this module composes
+repositories (persistence), ContextBuilder (model input), orchestrator
+(turn logic) and the Tool Engine (guarded execution).
+
+Error contract:
+- unknown/invalid conversation id  -> ConversationNotFound -> HTTP 404
+- empty/oversized message          -> rejected by API schema (422)
+- inference failure                -> typed InferenceError -> error envelope
+No silent conversation creation on invalid ids.
+"""
+
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.application import orchestrator
+from app.application.context import ContextBuilder, RecentMessagesStrategy
 from app.application.conversation_service import ConversationNotFound
 from app.application.inference import InferencePort
+from app.application.repositories import (
+    ConversationRepository,
+    MessageRepository,
+    to_context_message,
+)
 from app.application.tools.engine import ToolEngine
-from app.infrastructure.models import Conversation, Message, new_id
+from app.config.settings import get_settings
+from app.infrastructure.models import Message
 
-
-def _next_seq(session: Session, conversation_id: str) -> int:
-    current = session.scalar(
-        select(func.max(Message.seq)).where(Message.conversation_id == conversation_id)
-    )
-    return (current or 0) + 1
+MAX_TOOL_RESULT_CHARS = 400
 
 
 @dataclass
@@ -29,26 +42,7 @@ class ChatTurn:
     pending: orchestrator.PendingTool | None = None
 
 
-def _derive_title(content: str) -> str:
-    trimmed = content.strip()
-    if len(trimmed) > 50:
-        return trimmed[:50] + "…"
-    return trimmed
-
-
-def _existing_conversation(session: Session, conversation_id: str) -> Conversation:
-    conversation = session.get(Conversation, conversation_id)
-    if conversation is None:
-        raise ConversationNotFound(conversation_id)
-    return conversation
-
-
-def _build_tool_event(
-    conversation_id: str,
-    result: orchestrator.TurnResult,
-    seq: int,
-) -> Message | None:
-    """Persist an honest record of what the tool layer actually did."""
+def _tool_event_content(result: orchestrator.TurnResult) -> str | None:
     capability = result.tool_capability or (
         result.pending.capability if result.pending else ""
     )
@@ -61,60 +55,11 @@ def _build_tool_event(
         or (result.pending.arguments if result.pending else {}),
         "state": state,
     }
-    return Message(
-        id=new_id(),
-        conversation_id=conversation_id,
-        role="tool",
-        content=json.dumps(event, sort_keys=True),
-        seq=seq,
-    )
+    if result.tool_result_preview:
+        event["result"] = result.tool_result_preview[:MAX_TOOL_RESULT_CHARS]
+    import json
 
-
-def _finish(
-    session: Session,
-    conversation: Conversation,
-    user_text: str | None,
-    reply_text: str,
-    result: orchestrator.TurnResult,
-) -> ChatTurn:
-    seq = _next_seq(session, conversation.id)
-    to_add: list[Message] = []
-    if user_text is not None:
-        to_add.append(
-            Message(
-                id=new_id(),
-                conversation_id=conversation.id,
-                role="user",
-                content=user_text,
-                seq=seq,
-            )
-        )
-        seq += 1
-    # Tool activity happened BEFORE the final reply was produced, so its
-    # sequence sits between the user message and the assistant message.
-    tool_event = _build_tool_event(conversation.id, result, seq)
-    if tool_event is not None:
-        to_add.append(tool_event)
-        seq += 1
-    to_add.append(
-        Message(
-            id=new_id(),
-            conversation_id=conversation.id,
-            role="assistant",
-            content=reply_text,
-            seq=seq,
-        )
-    )
-    session.add_all(to_add)
-    session.commit()
-    return ChatTurn(
-        message=to_add[-1],
-        conversation_id=conversation.id,
-        tool_state=result.tool_state,
-        tool_capability=result.tool_capability,
-        tool_arguments=result.tool_arguments,
-        pending=result.pending,
-    )
+    return json.dumps(event, sort_keys=True)
 
 
 def execute_chat(
@@ -125,16 +70,47 @@ def execute_chat(
     message: str,
     conversation_id: str | None = None,
 ) -> ChatTurn:
+    settings = get_settings()
+    conversations = ConversationRepository(session)
+    messages = MessageRepository(session)
+
     if conversation_id is None:
-        conversation = Conversation(id=new_id(), title=_derive_title(message))
-        session.add(conversation)
-        session.flush()
+        conversation = conversations.create(title=message)
     else:
-        conversation = _existing_conversation(session, conversation_id)
-    result = orchestrator.run_turn(
-        inference, engine, approvals, message, conversation_id=conversation.id
+        conversation = conversations.get(conversation_id)
+
+    # History BEFORE this turn; bounded by configuration, not hardcoded.
+    history_rows = messages.recent(
+        conversation.id, limit=settings.context_max_messages
     )
-    return _finish(session, conversation, message, result.reply, result)
+    builder = ContextBuilder(
+        RecentMessagesStrategy(max_messages=settings.context_max_messages)
+    )
+    prompt = builder.build(
+        [to_context_message(row) for row in history_rows], message
+    )
+
+    result = orchestrator.run_turn(
+        inference, engine, approvals, prompt, conversation_id=conversation.id
+    )
+
+    messages.append(conversation.id, "user", message)
+    event_json = _tool_event_content(result)
+    if event_json is not None:
+        messages.append(conversation.id, "tool", event_json)
+    reply = messages.append(conversation.id, "assistant", result.reply)
+    conversations.touch(conversation.id)
+    session.commit()
+
+    return ChatTurn(
+        message=reply,
+        conversation_id=conversation.id,
+        tool_state=result.tool_state
+        or ("AWAITING_APPROVAL" if result.pending else ""),
+        tool_capability=result.tool_capability,
+        tool_arguments=result.tool_arguments,
+        pending=result.pending,
+    )
 
 
 def decide_approval(
@@ -148,8 +124,23 @@ def decide_approval(
     conversation_id = approvals.conversation_for(approval_id)
     if conversation_id is None:
         raise ConversationNotFound(approval_id)
-    conversation = _existing_conversation(session, conversation_id)
+    conversations = ConversationRepository(session)
+    conversation = conversations.get(conversation_id)
+
     result = orchestrator.resolve_decision(inference, engine, approval_id, approved)
-    # The human decision itself is recorded as a tool event; no synthetic
-    # user message is invented.
-    return _finish(session, conversation, None, result.reply, result)
+
+    messages = MessageRepository(session)
+    event_json = _tool_event_content(result)
+    if event_json is not None:
+        messages.append(conversation.id, "tool", event_json)
+    reply = messages.append(conversation.id, "assistant", result.reply)
+    conversations.touch(conversation.id)
+    session.commit()
+
+    return ChatTurn(
+        message=reply,
+        conversation_id=conversation.id,
+        tool_state=result.tool_state,
+        tool_capability=result.tool_capability,
+        tool_arguments=result.tool_arguments,
+    )

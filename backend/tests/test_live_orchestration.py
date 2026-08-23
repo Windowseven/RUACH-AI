@@ -46,7 +46,8 @@ def live_client(tmp_path_factory):
         base_url=settings.model_server_url,
         model_name=settings.model_name,
         timeout_seconds=300.0,
-        max_tokens=128,
+        max_tokens=384,
+        temperature=0.2,
         model_path=settings.model_path or None,
     )
     tool_engine = ToolEngine(
@@ -121,3 +122,57 @@ def test_real_model_plain_chat_stays_plain(live_client) -> None:
     data = response.json()["data"]
     assert data["tool"] is None or data["tool"]["state"] != "AWAITING_APPROVAL"
     assert data["content"].strip()
+
+
+def test_real_model_multi_turn_name_recall(live_client) -> None:
+    """P3 DoD: multi-turn context reaches the REAL model through ContextBuilder."""
+    client, _workspace = live_client
+    first = client.post(
+        "/api/v1/chat",
+        json={"message": "My name is Alice. Remember it and just say ok."},
+    ).json()["data"]
+    cid = first["conversation_id"]
+
+    second = client.post(
+        "/api/v1/chat",
+        json={"message": "What is my name? Answer with the name only.", "conversation_id": cid},
+    ).json()["data"]
+    assert "alice" in second["content"].lower(), second["content"]
+
+
+def test_real_model_coreference_read(live_client) -> None:
+    """P3 DoD: a later turn resolves 'the project file' via stored context.
+
+    Behavioral assertion (not choreography): whichever turn performs it,
+    the conversation must contain a COMPLETED filesystem.read whose path
+    equals the filename given in an EARLIER message, with the file result
+    persisted into the conversation record.
+    """
+    import json as _json
+
+    client, workspace = live_client
+    (workspace / "haiku.txt").write_text("first line here", encoding="utf-8")
+    first = client.post(
+        "/api/v1/chat",
+        json={"message": "The project file is haiku.txt."},
+    ).json()["data"]
+    cid = first["conversation_id"]
+
+    client.post(
+        "/api/v1/chat",
+        json={"message": "Read the project file.", "conversation_id": cid},
+    )
+
+    detail = client.get(f"/api/v1/conversations/{cid}").json()["data"]
+    tool_events = [
+        _json.loads(m["content"]) for m in detail["messages"] if m["role"] == "tool"
+    ]
+    assert any(
+        event.get("capability") == "filesystem.read"
+        and event.get("state") == "COMPLETED"
+        and event.get("arguments", {}).get("path") == "haiku.txt"
+        for event in tool_events
+    ), tool_events
+    assert any(
+        "first line here" in event.get("result", "") for event in tool_events
+    ), "file result must participate in conversation context"
