@@ -45,7 +45,9 @@ def test_system_reports_only_allowed_fields() -> None:
         "runtime_status",
         "inference",
         "database",
+        "tools",
     }
+    assert body["data"]["tools"] == "restricted"
     assert body["data"]["ruach_version"]
     assert body["data"]["api_version"] == "v1"
     assert body["data"]["runtime_status"] == "running"

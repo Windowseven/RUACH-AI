@@ -40,6 +40,7 @@ class SystemData(BaseModel):
     runtime_status: str
     inference: str
     database: str
+    tools: str
 
 
 class SystemResponse(BaseModel):

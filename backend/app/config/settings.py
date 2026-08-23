@@ -9,6 +9,14 @@ def _default_database_url() -> str:
     return f"sqlite:///{Path.home() / '.ruach' / 'data' / 'ruach.db'}"
 
 
+def _default_workspace_path() -> Path:
+    return Path.home() / ".ruach" / "workspace"
+
+
+def _default_audit_log_path() -> Path:
+    return Path.home() / ".ruach" / "data" / "audit.jsonl"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="RUACH_")
 
@@ -21,6 +29,8 @@ class Settings(BaseSettings):
     model_path: str = ""
     model_server_url: str = "http://127.0.0.1:8080"
     inference_timeout_seconds: float = 120.0
+    workspace_path: Path = Field(default_factory=_default_workspace_path)
+    audit_log_path: Path = Field(default_factory=_default_audit_log_path)
 
 
 @lru_cache

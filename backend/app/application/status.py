@@ -38,6 +38,12 @@ def database_state() -> ComponentState:
         return "unavailable"
 
 
+def tools_state() -> Literal["restricted", "disabled", "unavailable"]:
+    # The engine is always constructed with a deny-by-default policy;
+    # "restricted" is the honest MVP state (docs/09 §47).
+    return "restricted"
+
+
 def overall_status(
     inference: str,
     database: str,

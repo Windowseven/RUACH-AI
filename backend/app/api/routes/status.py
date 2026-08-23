@@ -13,6 +13,7 @@ from app.application.status import (
     inference_state,
     overall_status,
     package_version,
+    tools_state,
 )
 
 router = APIRouter(tags=["status"])
@@ -41,6 +42,7 @@ def system() -> SystemResponse:
             runtime_status="running",
             inference=inference_state(),
             database=database_state(),
+            tools=tools_state(),
         ),
         request_id=request_id_var.get(),
     )

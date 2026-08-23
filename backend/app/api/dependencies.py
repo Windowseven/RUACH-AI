@@ -1,15 +1,20 @@
 from collections.abc import Iterator
+from pathlib import Path
 
 from sqlalchemy.orm import Session
 
 from app.application.inference import InferencePort
-from app.config.settings import get_settings
+from app.application.tools.approvals import InMemoryApprovalStore
+from app.application.tools.audit import AuditLog
+from app.application.tools.engine import ToolEngine
+from app.application.tools.paths import WorkspaceBoundary
+from app.config.settings import Settings, get_settings
 from app.infrastructure.db import create_session_factory
 from app.infrastructure.inference_llamacpp import LlamaCppAdapter
 from app.infrastructure.inference_stub import StubInference
 
 
-def build_inference(settings=None) -> InferencePort:
+def build_inference(settings: Settings | None = None) -> InferencePort:
     settings = settings or get_settings()
     if settings.model_runtime == "stub":
         return StubInference()
@@ -25,6 +30,20 @@ def build_inference(settings=None) -> InferencePort:
 
 def get_inference() -> InferencePort:
     return build_inference()
+
+
+_engine: ToolEngine | None = None
+
+
+def get_tool_engine() -> ToolEngine:
+    global _engine
+    if _engine is None:
+        settings = get_settings()
+        boundary = WorkspaceBoundary(Path(settings.workspace_path))
+        approvals = InMemoryApprovalStore()
+        audit = AuditLog(Path(settings.audit_log_path))
+        _engine = ToolEngine(boundary, approvals, audit)
+    return _engine
 
 
 def get_session() -> Iterator[Session]:
