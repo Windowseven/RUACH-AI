@@ -50,7 +50,15 @@ export const api = {
       body: JSON.stringify({
         conversation_id: conversationId,
         message,
-        max_tokens: maxTokens,
       }),
+    }),
+  approveTool: (approvalId) =>
+    request(`/chat/approvals/${encodeURIComponent(approvalId)}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ approved: true }),
+    }),
+  rejectTool: (approvalId) =>
+    request(`/chat/approvals/${encodeURIComponent(approvalId)}/reject`, {
+      method: "POST",
     }),
 };

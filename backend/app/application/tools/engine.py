@@ -125,6 +125,12 @@ class ToolEngine:
         self._audit.emit("tool_rejected_by_user")
         return ToolOutcome(state="REJECTED")
 
+    def capability_for(self, approval_id: str) -> str:
+        try:
+            return self._approvals.get(approval_id).capability
+        except ApprovalError:
+            return "unknown"
+
     # ------------------------------------------------------------------
     def _validate(self, request: ToolRequest) -> ToolRequest:
         if not isinstance(request.tool, str) or not request.tool.strip():

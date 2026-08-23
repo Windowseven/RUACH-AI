@@ -103,10 +103,19 @@ async function selectConversation(id) {
   renderConversationList();
   try {
     const detail = await api.conversationDetail(id);
-    els.messages.querySelectorAll(".message").forEach((m) => m.remove());
+    els.messages.querySelectorAll(".message, .approval-card, .tool-activity").forEach((n) => n.remove());
     els.empty.style.display = detail.messages.length ? "none" : "";
     for (const msg of detail.messages) {
-      addMessage(msg.role, msg.content);
+      if (msg.role === "tool") {
+        try {
+          const event = JSON.parse(msg.content);
+          addToolActivity(event.capability || "unknown", event.state || "?");
+        } catch {
+          addToolActivity("unknown", "LOGGED");
+        }
+      } else {
+        addMessage(msg.role, msg.content);
+      }
     }
     closeDrawer();
   } catch (err) {
@@ -116,11 +125,92 @@ async function selectConversation(id) {
 
 function resetToNewChat() {
   state.activeId = null;
-  els.messages.querySelectorAll(".message").forEach((m) => m.remove());
+  els.messages
+    .querySelectorAll(".message, .approval-card, .tool-activity")
+    .forEach((n) => n.remove());
   els.empty.style.display = "";
   renderConversationList();
   closeDrawer();
   els.input.focus();
+}
+
+function addToolActivity(capability, stateLabel) {
+  els.empty.style.display = "none";
+  const line = document.createElement("div");
+  line.className = `tool-activity tool-${stateLabel.toLowerCase()}`;
+  line.textContent = `TOOL ${capability} — ${stateLabel}`;
+  els.messages.appendChild(line);
+  scrollToEnd();
+}
+
+function addApprovalCard(pending) {
+  els.empty.style.display = "none";
+  const card = document.createElement("section");
+  card.className = "approval-card";
+
+  const head = document.createElement("header");
+  const title = document.createElement("div");
+  title.className = "approval-title";
+  title.textContent = "APPROVAL REQUIRED";
+  const cap = document.createElement("div");
+  cap.className = "approval-capability";
+  cap.textContent = pending.capability;
+  const args = document.createElement("code");
+  args.className = "approval-args";
+  args.textContent = JSON.stringify(pending.arguments);
+  head.append(title, cap, args);
+
+  const actions = document.createElement("div");
+  actions.className = "approval-actions";
+  const denyBtn = document.createElement("button");
+  denyBtn.type = "button";
+  denyBtn.className = "btn-deny";
+  denyBtn.textContent = "DENY";
+  const approveBtn = document.createElement("button");
+  approveBtn.type = "button";
+  approveBtn.className = "btn-approve";
+  approveBtn.textContent = "APPROVE";
+  actions.append(denyBtn, approveBtn);
+
+  card.append(head, actions);
+  els.messages.appendChild(card);
+  scrollToEnd();
+
+  let settled = false;
+  async function decide(kind) {
+    if (settled) return;
+    settled = true;
+    approveBtn.disabled = true;
+    denyBtn.disabled = true;
+    card.classList.add("settling");
+    try {
+      const result =
+        kind === "approve"
+          ? await api.approveTool(pending.approval_id)
+          : await api.rejectTool(pending.approval_id);
+      card.remove();
+      if (result.tool) {
+        addToolActivity(result.tool.capability, result.tool.state);
+      }
+      addMessage("assistant", result.content);
+      await refreshConversations();
+    } catch (err) {
+      card.classList.remove("settling");
+      settled = false;
+      approveBtn.disabled = false;
+      denyBtn.disabled = false;
+      addMessage(
+        "error",
+        err.code === "OFFLINE"
+          ? "The local server is unreachable. The action was not executed."
+          : `Approval failed (${err.code}): ${err.message}`,
+      );
+      if (err.code === "OFFLINE") setConnection("disconnected");
+    }
+  }
+
+  approveBtn.addEventListener("click", () => decide("approve"));
+  denyBtn.addEventListener("click", () => decide("deny"));
 }
 
 async function sendMessage(text) {
@@ -134,7 +224,13 @@ async function sendMessage(text) {
   try {
     const result = await api.send(state.activeId, text.trim());
     thinking.block.remove();
+    if (result.tool) {
+      addToolActivity(result.tool.capability, result.tool.state);
+    }
     addMessage("assistant", result.content);
+    if (result.pending_approval) {
+      addApprovalCard(result.pending_approval);
+    }
     if (!state.activeId) {
       state.activeId = result.conversation_id;
     }

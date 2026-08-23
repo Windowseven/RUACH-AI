@@ -4,6 +4,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.application.inference import InferencePort
+from app.application.orchestrator import ApprovalIndex
 from app.application.tools.approvals import InMemoryApprovalStore
 from app.application.tools.audit import AuditLog
 from app.application.tools.engine import ToolEngine
@@ -33,6 +34,7 @@ def get_inference() -> InferencePort:
 
 
 _engine: ToolEngine | None = None
+_approval_index: ApprovalIndex | None = None
 
 
 def get_tool_engine() -> ToolEngine:
@@ -44,6 +46,13 @@ def get_tool_engine() -> ToolEngine:
         audit = AuditLog(Path(settings.audit_log_path))
         _engine = ToolEngine(boundary, approvals, audit)
     return _engine
+
+
+def get_approval_index() -> ApprovalIndex:
+    global _approval_index
+    if _approval_index is None:
+        _approval_index = ApprovalIndex()
+    return _approval_index
 
 
 def get_session() -> Iterator[Session]:

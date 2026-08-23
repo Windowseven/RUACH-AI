@@ -8,7 +8,14 @@ def test_chat_creates_conversation_and_persists_two_messages(client):
     response = client.post("/api/v1/chat", json={"message": "Explain this Python error."})
     assert response.status_code == 200
     body = response.json()
-    assert set(body["data"].keys()) == {"message_id", "conversation_id", "role", "content"}
+    assert set(body["data"].keys()) == {
+        "message_id",
+        "conversation_id",
+        "role",
+        "content",
+        "tool",
+        "pending_approval",
+    }
     assert body["data"]["role"] == "assistant"
     assert "[stub]" in body["data"]["content"]
 
