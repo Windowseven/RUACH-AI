@@ -494,3 +494,35 @@ files served by FastAPI, so the Termux runtime story is unchanged.
 Statuses: frontend stack IMPLEMENTED + MAC VERIFIED (E2E vs real
 backend); TERMUX VERIFIED pending target validation. Legacy vanilla UI
 removed from tree (recoverable in git history).
+
+### P16 — CLI guided UX: `./ruach` becomes self-discovering (2026-08-24)
+
+The entrypoint is now STATE-DRIVEN. Bare `./ruach` resolves the product
+state from ACTUAL persisted signals (runtime status/pids, setup_state.json
+stage, generated config, model artifact, engine binary, migrated database)
+and shows the experience that state calls for:
+
+- FIRST_RUN → welcome (setup / learn / help); SETUP_INCOMPLETE → resume;
+  READY → home menu; RUNNING → manage menu with NO duplicate start and the
+  local URL shown; DEGRADED/ERROR → what is wrong, why, exact next command.
+- New direct commands (all pre-existing ones unchanged): `restart`,
+  `logs --lines N`, `config` (effective RUACH_* view), `model`, and a
+  categorized human `help`. `version` now sources bootstrap/version.py.
+- Health flags are TRI-STATE (ok / fail / unknown) — never a silent lie.
+- Non-tty invocations print a one-screen summary + exact commands and exit
+  0; prompts are impossible in scripts.
+- Browser opening moved behind `bootstrap/browser.py` (`launch_url`):
+  Termux helper chain, GUI availability check, URL always printed as the
+  fallback. Termux path UNVERIFIED until target validation.
+- Start success now ends in an educational "RUACH IS READY" screen; start
+  failures explain what happened, why, and numbered recovery options.
+
+Tests: tests_bootstrap/test_cli_guided.py covers flows A–G (first-run,
+resume, ready, running-no-restart, degraded-reasons, error-readability,
+help categories, direct-command regression, non-tty summary, ≤62-col
+menus). Suites: bootstrap 109 passed, backend 122 passed + 1 skipped,
+ruff clean (bootstrap/ tests_bootstrap/ backend/, migrations style-
+scoped), mypy clean on new modules.
+
+Statuses: guided UX IMPLEMENTED + MAC VERIFIED (real PTY run vs real
+~/.ruach state); TERMUX VERIFIED pending target validation.

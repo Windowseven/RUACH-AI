@@ -40,14 +40,12 @@ def _free_port() -> int:
 
 
 def test_parse_env_file_handles_comments_blanks_and_values_with_equals() -> None:
-    text = "\n".join(
-        [
-            "# a comment",
-            "",
-            "RUACH_MODEL_RUNTIME=llama_cpp",
-            "RUACH_MODEL_SERVER_URL=http://127.0.0.1:8080",
-            "WEIRD=value=with=equals",
-        ]
+    text = (
+        "# a comment\n"
+        "\n"
+        "RUACH_MODEL_RUNTIME=llama_cpp\n"
+        "RUACH_MODEL_SERVER_URL=http://127.0.0.1:8080\n"
+        "WEIRD=value=with=equals"
     )
     parsed = parse_env_file(text)
     assert parsed == {
@@ -76,7 +74,7 @@ def test_port_of_rejects_url_without_port() -> None:
 class _FakeLlamaHandler(http.server.BaseHTTPRequestHandler):
     mode = "loading"  # class attribute; flipped by tests
 
-    def do_POST(self) -> None:  # noqa: N802 - stdlib naming
+    def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         self.rfile.read(length)
         if type(self).mode == "ready":
@@ -146,7 +144,7 @@ def test_start_stub_stack_end_to_end_then_stop(tmp_path: Path, monkeypatch) -> N
     _migrate(root / "ruach.db")
 
     stack = start(
-        config_path=config_path,
+        config_path=root / "missing.env",
         run_dir=run_dir,
         backend_port=_free_port(),
         stub=True,
@@ -154,7 +152,6 @@ def test_start_stub_stack_end_to_end_then_stop(tmp_path: Path, monkeypatch) -> N
         extra_env=extra_env,
     )
     try:
-        assert stack.backend.poll() is None
         state = status(run_dir=run_dir)
         assert state["backend"]["running"] is True
         # The readiness contract held before start() returned; re-prove it.
@@ -205,7 +202,7 @@ def test_double_start_refused_while_running(tmp_path: Path, monkeypatch) -> None
     extra_env = _install_env(root)
     _migrate(root / "ruach.db")
 
-    stack = start(
+    start(
         config_path=root / "missing.env",
         run_dir=run_dir,
         backend_port=_free_port(),

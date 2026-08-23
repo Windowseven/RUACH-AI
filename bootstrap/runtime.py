@@ -34,7 +34,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-import webbrowser
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -457,10 +456,9 @@ def start(
     set_lifecycle(run_dir, "HEALTHY", base_url=base_url)
 
     if browser:
-        try:
-            webbrowser.open(base_url + "/")
-        except Exception:  # noqa: BLE001 - headless boxes must not crash start
-            echo("[start] could not open a browser automatically")
+        from bootstrap.browser import launch_url
+
+        launch_url(base_url + "/", echo=echo)
 
     return RuntimeStack(backend, model_server, base_url, run_dir)
 

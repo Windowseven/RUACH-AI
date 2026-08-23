@@ -130,7 +130,7 @@ def _redirect_config(monkeypatch, tmp_path: Path) -> None:
 def test_partial_device_profile_is_labeled_not_silent(monkeypatch) -> None:
     import dataclasses
 
-    import ruach_setup.capability as capability
+    from ruach_setup import capability
 
     real_build = capability.build_profile
 
