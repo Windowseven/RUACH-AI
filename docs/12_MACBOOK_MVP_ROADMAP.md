@@ -152,9 +152,9 @@ Release                  NOT STARTED
 
 | Inc | Content | Closes |
 |---|---|---|
-| 8 | Dev-host inference bring-up: build llama.cpp locally, `ruach start` skeleton, prove real prompt→response through InferencePort | AI integration |
-| 9 | Tool Engine core per docs/05: ToolRequest schema, PolicyEngine (ALLOW/DENY/REQUIRE_APPROVAL), workspace boundary + safe path resolution, approval store + binding, filesystem read/list/write executor, audit log, adversarial security tests | Tool Engine |
-| 10 | Frontend MVP per docs/09: design tokens, boot screen wired to `/status`, chat workspace, composer, error/offline states, mobile layout; vanilla HTML/CSS/JS served by FastAPI (single process — also the right shape for Termux; doc 09 §83/§87 discourage heavy frameworks) | Frontend |
+| 8 | Dev-host inference bring-up: build llama.cpp locally, `ruach start` skeleton, prove real prompt→response through InferencePort | AI integration — DONE: compiled from source (CPU), Qwen3-0.6B-Q8_0 served, real round-trip ~12s through full stack; n_predict cap + <think> stripping added; real-model proposal formatting unreliable at 0.6B (fail-safe held: invented syntax = inert text); GBNF grammar constraint is post-gate work |
+| 9 | Tool Engine core per docs/05: ToolRequest schema, PolicyEngine (ALLOW/DENY/REQUIRE_APPROVAL), workspace boundary + safe path resolution, approval store + binding, filesystem read/list/write executor, audit log, adversarial security tests | Tool Engine — DONE (d538ca8): core+API+orchestrator; model proposals parsed from `<tool_request>` blocks, approvals surfaced to UI, decisions recorded as tool events |
+| 10 | Frontend MVP per docs/09: design tokens, boot screen wired to `/status`, chat workspace, composer, error/offline states, mobile layout; vanilla HTML/CSS/JS served by FastAPI (single process — also the right shape for Termux; doc 09 §83/§87 discourage heavy frameworks) | Frontend — boot+chat+approval card live (a2ed12f, 6a27421); settings/tool-approval views remain |
 | 11 | Full `./ruach start` wiring: load generated env config, spawn llama-server if configured, launch uvicorn serving UI+API, health checks; doctor upgrades | CLI DoD |
 | 12 | Scripted fresh-environment E2E test = **MACBOOK MVP GATE**; then resume target validation (docs/11) on the phone | Gate |
 

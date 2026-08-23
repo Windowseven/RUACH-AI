@@ -27,13 +27,29 @@ class LlamaCppAdapter:
         model_name: str,
         timeout_seconds: float,
         model_path: str | None = None,
+        max_tokens: int = 256,
         opener: Any = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model_name = model_name
         self._timeout = timeout_seconds
+        self._max_tokens = max_tokens
         self._model_path = Path(model_path) if model_path else None
         self._opener = opener if opener is not None else urllib.request.urlopen
+
+    @staticmethod
+    def _strip_reasoning(text: str) -> str:
+        """Remove hidden reasoning blocks (docs/06 §18 forbids exposing them).
+
+        Qwen3-style models emit <think>...</think> before the answer; the
+        answer is the only part that may reach the conversation.
+        """
+        import re
+
+        stripped = re.sub(r"<think>[\s\S]*?</think>", "", text)
+        if "<think>" in stripped:  # unterminated block: reasoning never closed
+            stripped = re.sub(r"<think>[\s\S]*", "", stripped)
+        return stripped.strip()
 
     def _ensure_model_file(self) -> None:
         if self._model_path is not None and not self._model_path.is_file():
@@ -64,7 +80,11 @@ class LlamaCppAdapter:
 
     def complete(self, prompt: str) -> str:
         self._ensure_model_file()
-        status, raw = self._request("POST", "/completion", {"prompt": prompt})
+        status, raw = self._request(
+            "POST",
+            "/completion",
+            {"prompt": prompt, "n_predict": self._max_tokens},
+        )
         if status == 404:
             raise ModelNotFound(self._model_name)
         if status == 503:
@@ -75,7 +95,7 @@ class LlamaCppAdapter:
             result = json.loads(raw)["content"]
         except (ValueError, KeyError) as error:
             raise InferenceFailed("llama.cpp returned malformed output.") from error
-        return str(result)
+        return self._strip_reasoning(str(result))
 
     def health(self) -> InferenceHealth:
         try:

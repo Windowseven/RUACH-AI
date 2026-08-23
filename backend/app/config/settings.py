@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     model_path: str = ""
     model_server_url: str = "http://127.0.0.1:8080"
     inference_timeout_seconds: float = 120.0
+    inference_max_tokens: int = 256
     workspace_path: Path = Field(default_factory=_default_workspace_path)
     audit_log_path: Path = Field(default_factory=_default_audit_log_path)
 

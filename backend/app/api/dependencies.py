@@ -25,6 +25,7 @@ def build_inference(settings: Settings | None = None) -> InferencePort:
         base_url=settings.model_server_url,
         model_name=settings.model_name,
         timeout_seconds=settings.inference_timeout_seconds,
+        max_tokens=settings.inference_max_tokens,
         model_path=settings.model_path or None,
     )
 
