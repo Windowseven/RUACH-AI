@@ -18,6 +18,45 @@
   }
 }
 
+/* "RUACH is responding" indicator */
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 2px;
+}
+.typing-dots .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-ink-faint);
+  animation: dot-rise 1.2s ease-in-out infinite;
+}
+.typing-dots .dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing-dots .dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes dot-rise {
+  0%,
+  60%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .typing-dots .dot {
+    animation: none;
+    opacity: 0.55;
+  }
+}
+
 /* ------------------------------------------------------------- workspace */
 .workspace {
   height: 100%;

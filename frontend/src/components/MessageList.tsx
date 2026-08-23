@@ -49,7 +49,11 @@ export function MessageList({
                   <span className="state-glyph">◉</span>
                   <span className="who">RUACH</span>
                 </div>
-                <div className="body">…</div>
+                <div className="body typing-dots" role="status" aria-label="RUACH is responding">
+                  <span className="dot" />
+                  <span className="dot" />
+                  <span className="dot" />
+                </div>
               </article>
             );
           case "tool":

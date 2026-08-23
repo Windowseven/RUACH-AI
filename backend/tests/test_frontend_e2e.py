@@ -161,6 +161,47 @@ def test_chat_round_trip_and_memory_through_ui(page: Page) -> None:
     expect(answer).to_have_text("Your name is Amani.")
 
 
+def test_thinking_indicator_animates_while_awaiting_reply(page: Page) -> None:
+    _open_workspace(page)
+
+    # Hold the chat request at the network layer (no JS route callbacks:
+    # those race with context teardown in the sync API).
+    cdp = page.context.new_cdp_session(page)
+    cdp.send("Network.enable")
+    cdp.send(
+        "Network.emulateNetworkConditions",
+        {
+            "offline": False,
+            "latency": 2000,
+            "downloadThroughput": -1,
+            "uploadThroughput": -1,
+        },
+    )
+    _send(page, "hello")
+
+    dots = page.locator(".state-thinking .typing-dots .dot")
+    expect(dots).to_have_count(3)
+    animation = dots.first.evaluate(
+        "el => getComputedStyle(el).animationName + ' ' + getComputedStyle(el).animationDuration"
+    )
+    assert animation.startswith("dot-rise"), f"indicator not animating: {animation}"
+    assert animation != "dot-rise 0s", "animation has zero duration (static)"
+
+    cdp.send(
+        "Network.emulateNetworkConditions",
+        {
+            "offline": False,
+            "latency": 0,
+            "downloadThroughput": -1,
+            "uploadThroughput": -1,
+        },
+    )
+    # The delayed reply must still land after the indicator disappears.
+    reply = page.locator(".message.assistant .body").last
+    expect(reply).to_contain_text("[stub] You said: hello", timeout=15_000)
+    expect(page.locator(".state-thinking")).to_have_count(0)
+
+
 def test_approval_approve_executes_filesystem_for_real(page: Page, server) -> None:
     target = server["workspace"] / "report.txt"
     assert target.exists()
