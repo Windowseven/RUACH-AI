@@ -76,9 +76,7 @@ def test_dependency_probe_reports_missing_packages_individually(monkeypatch) -> 
 def test_run_probe_writes_record_and_summary(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("RUACH_MODEL_SERVER_URL", raising=False)
-    config_dir = tmp_path / ".ruach" / "config"
-    config_dir.mkdir(parents=True)
-    # no generated config -> inference skipped honestly
+    _redirect_config(monkeypatch, tmp_path)  # no generated config -> skip honestly
 
     out_path = probe.run_probe(echo=lambda *_: None)
     record = json.loads(out_path.read_text())
@@ -93,6 +91,63 @@ def test_run_probe_writes_record_and_summary(tmp_path: Path, monkeypatch, capsys
     assert sections["sqlite"]["data"]["wal_supported"] is True
     storage = sections["storage_paths"]["data"]
     assert all(item["writable"] for item in storage.values())
+    assert sections["inference_latency"]["status"] == "skipped"
+    assert sections["model_artifact"]["status"] == "skipped"
+
+
+def test_run_probe_sees_generated_config_keys(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    config_dir = tmp_path / ".ruach" / "config"
+    config_dir.mkdir(parents=True)
+    model = tmp_path / "tiny.gguf"
+    model.write_bytes(b"\x00")
+    (config_dir / "ruach.env").write_text(
+        f"RUACH_MODEL_PATH={model}\nRUACH_MODEL_SERVER_URL=http://127.0.0.1:1\n",
+        encoding="utf-8",
+    )
+    _redirect_config(monkeypatch, tmp_path)
+
+    out_path = probe.run_probe(echo=lambda *_: None)
+    sections = json.loads(out_path.read_text())["environment_sections"]
+    artifact = sections["model_artifact"]
+    assert artifact["status"] == "measured"
+    assert artifact["data"]["path"] == str(model)
+    # unreachable endpoint -> honest skip, derived FROM CONFIG not hardcoded
+    latency = sections["inference_latency"]
+    assert latency["status"] == "skipped" and "127.0.0.1:1" in latency["reason"]
+
+
+def _redirect_config(monkeypatch, tmp_path: Path) -> None:
+    from bootstrap import runtime
+
+    monkeypatch.setattr(
+        runtime,
+        "DEFAULT_CONFIG_PATH",
+        tmp_path / ".ruach" / "config" / "ruach.env",
+    )
+
+
+def test_partial_device_profile_is_labeled_not_silent(monkeypatch) -> None:
+    import dataclasses
+
+    import ruach_setup.capability as capability
+
+    real_build = capability.build_profile
+
+    def half_blind_build(raw):
+        profile = real_build(raw)
+        return dataclasses.replace(
+            profile, ram_total_bytes=None, ram_available_bytes=None
+        )
+
+    monkeypatch.setattr(capability, "build_profile", half_blind_build)
+    section = probe.collect_environment()
+    assert section["status"] == "measured"
+    assert "ram_total_bytes" in section["reason"]
+    assert section["data"]["_unreadable_fields"] == [
+        "ram_available_bytes",
+        "ram_total_bytes",
+    ]
 
 
 def _collect(**kwargs) -> dict:

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ruach_setup.download import DownloadError, download, sha256_of_file
 from ruach_setup.preflight import check_storage
-from ruach_setup.registry import ModelEntry, load_models
+from ruach_setup.registry import load_models
 from ruach_setup.state import SetupState, save_state
 
 

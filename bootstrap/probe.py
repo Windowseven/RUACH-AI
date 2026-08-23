@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import platform
 import sqlite3
 import statistics
@@ -51,20 +50,29 @@ def collect_environment() -> dict:
         from ruach_setup.device import SystemEnvironmentReader
 
         profile = build_profile(SystemEnvironmentReader().read())
-        return _section(
-            "measured",
-            {
-                "platform_name": profile.platform_name,
-                "android_detected": profile.android_detected,
-                "termux_detected": profile.termux_detected,
-                "architecture": profile.architecture,
-                "abi": profile.abi,
-                "cpu_cores": profile.cpu_cores,
-                "ram_total_bytes": profile.ram_total_bytes,
-                "ram_available_bytes": profile.ram_available_bytes,
-                "storage_available_bytes": profile.storage_available_bytes,
-            },
-        )
+        data = {
+            "platform_name": profile.platform_name,
+            "android_detected": profile.android_detected,
+            "termux_detected": profile.termux_detected,
+            "architecture": profile.architecture,
+            "abi": profile.abi,
+            "cpu_cores": profile.cpu_cores,
+            "ram_total_bytes": profile.ram_total_bytes,
+            "ram_available_bytes": profile.ram_available_bytes,
+            "storage_available_bytes": profile.storage_available_bytes,
+        }
+        # Honesty over optimism: a section that could not read some fields
+        # is PARTIAL, not measured — downstream decisions must know.
+        unread = sorted(k for k, v in data.items() if v is None)
+        if unread == list(data):
+            return _section("unavailable", reason="no fields readable on this platform")
+        if unread:
+            return _section(
+                "measured",
+                {**data, "_unreadable_fields": unread},
+                reason=f"unreadable: {', '.join(unread)}",
+            )
+        return _section("measured", data)
     except Exception as error:  # noqa: BLE001 - probe reports, never crashes
         return _section("unavailable", reason=f"{type(error).__name__}: {error}")
 
@@ -124,7 +132,7 @@ def collect_runtime(env: dict[str, str]) -> dict:
     from bootstrap.runtime_resolver import configured_binary_override, resolve_llama_server
 
     resolved = resolve_llama_server(explicit=configured_binary_override(env))
-    if not resolved.found:
+    if not resolved.found or resolved.path is None:
         return _section("unavailable", reason="llama-server not found (config/user/project/PATH)")
     stat = resolved.path.stat()
     return _section(
@@ -147,7 +155,8 @@ def collect_model_artifact(env: dict[str, str]) -> dict:
     return _section("measured", {"path": str(path), "size_bytes": path.stat().st_size})
 
 
-def _completion(url: str, timeout: float, max_tokens: int, prompt: str) -> tuple[float, int | None]:
+def _completion(base_url: str, timeout: float, max_tokens: int, prompt: str) -> tuple[float, int | None]:
+    url = base_url.rstrip("/") + "/v1/chat/completions"
     payload = json.dumps(
         {
             "max_tokens": max_tokens,
@@ -185,7 +194,9 @@ def _percentiles(values: list[float]) -> dict:
 def collect_inference_latency(url: str, quick: int, real: int) -> dict:
     base = url.rstrip("/")
     try:
-        elapsed_first, _tokens_first = _completion(base, timeout=300.0, max_tokens=1, prompt="ping")
+        elapsed_first, _tokens_first = _completion(
+            base, timeout=300.0, max_tokens=1, prompt="ping"
+        )
         first_token_s = round(elapsed_first, 3)
     except (urllib.error.URLError, OSError, ValueError) as error:
         return _section(
@@ -205,7 +216,10 @@ def collect_inference_latency(url: str, quick: int, real: int) -> dict:
     tps_64 = []
     for _ in range(max(1, real)):
         seconds, tokens = _completion(
-            base, timeout=600.0, max_tokens=64, prompt="Summarize what a local AI assistant is."
+            base,
+            timeout=600.0,
+            max_tokens=64,
+            prompt="Summarize what a local AI assistant is.",
         )
         sixty_four.append(seconds)
         if tokens:
@@ -214,7 +228,7 @@ def collect_inference_latency(url: str, quick: int, real: int) -> dict:
     return _section(
         "measured",
         {
-            "endpoint": base,
+            "endpoint": base + "/v1/chat/completions",
             "first_token_after_warm_call_s": first_token_s,
             "one_token_completions": _percentiles(one_token),
             "one_token_tokens_per_second": one_token_tps or None,
@@ -301,14 +315,14 @@ def run_probe(
     real: int = 3,
     echo=print,
 ) -> Path:
-    env = dict(os.environ)
+    from bootstrap.runtime import DEFAULT_CONFIG_PATH, load_config, merged_environment
 
-    # Inference URL precedence: flag > generated config > default.
-    config_path = Path.home() / ".ruach" / "config" / "ruach.env"
-    if config_path.is_file():
-        for line in config_path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("RUACH_MODEL_SERVER_URL="):
-                env.setdefault("RUACH_MODEL_SERVER_URL", line.split("=", 1)[1])
+    # Full config merge (process env wins over generated file), exactly as
+    # the orchestrating CLI sees it — the probe must not know fewer keys
+    # than the product does.
+    env = merged_environment(
+        load_config(DEFAULT_CONFIG_PATH) if DEFAULT_CONFIG_PATH.is_file() else {}
+    )
     url = inference_url or env.get("RUACH_MODEL_SERVER_URL", "")
 
     report: dict = {

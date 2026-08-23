@@ -291,8 +291,8 @@ def _migration_heads(versions_dir: Path) -> set[str]:
         return set()
     for path in versions_dir.glob("*.py"):
         text = path.read_text(encoding="utf-8", errors="replace")
-        rev_match = re.search(r'^revision(?::\s*str)?\s*=\s*["\']([^"\']+)["\']', text, re.M)
-        down_match = re.search(r'^down_revision(?::[^=]*)?\s*=\s*(.+)$', text, re.M)
+        rev_match = re.search(r'^revision(?::\s*str)?\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+        down_match = re.search(r'^down_revision(?::[^=]*)?\s*=\s*(.+)$', text, re.MULTILINE)
         if rev_match is None:
             continue
         down_raw = down_match.group(1).strip() if down_match else ""

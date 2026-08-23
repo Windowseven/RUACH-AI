@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 import tempfile
 import time
 import urllib.request
@@ -44,12 +43,11 @@ class Stage:
         command = self.command or []
         if "bash" in command and shutil.which("bash") is None:
             return "bash not available on this platform"
-        if any(arg == "sqlite3" for arg in command):
-            if shutil.which("sqlite3") is None:
-                return "sqlite3 CLI not available (dev-only convenience)"
+        if any(arg == "sqlite3" for arg in command) and shutil.which("sqlite3") is None:
+            return "sqlite3 CLI not available (dev-only convenience)"
         if self.name == "browser-e2e":
             try:
-                __import__("playwright")  # noqa: F401
+                __import__("playwright")
             except ImportError:
                 return "playwright extra not installed (pip install -e '.[e2e]')"
         return None

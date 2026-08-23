@@ -271,6 +271,7 @@ def _migrate(env: dict[str, str]) -> None:
         env=env,
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise StartError(f"Migration failed:\n{result.stderr[-800:]}")
@@ -355,7 +356,7 @@ def start(
             )
         server_port = port_of(env.get("RUACH_MODEL_SERVER_URL", "http://127.0.0.1:8080"))
         run_dir.mkdir(parents=True, exist_ok=True)
-        model_log = open(run_dir / "model_server.log", "ab")
+        model_log = open(run_dir / "model_server.log", "ab")  # noqa: SIM115 (long-lived subprocess log; closed by shutdown)
         echo(
             f"[start] model runtime : llama-server on 127.0.0.1:{server_port} "
             f"(resolved: {resolved.source})"
@@ -391,7 +392,7 @@ def start(
 
     run_dir.mkdir(parents=True, exist_ok=True)
     set_lifecycle(run_dir, "STARTING", base_url=base_url)
-    backend_log = open(run_dir / "backend.log", "ab")
+    backend_log = open(run_dir / "backend.log", "ab")  # noqa: SIM115 (long-lived subprocess log; closed by shutdown)
     echo(f"[start] backend       : uvicorn on {base_url}")
     backend = subprocess.Popen(
         [
