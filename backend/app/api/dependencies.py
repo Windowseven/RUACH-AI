@@ -4,12 +4,11 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.application.inference import InferencePort
-from app.application.orchestrator import ApprovalIndex
-from app.application.tools.approvals import InMemoryApprovalStore
 from app.application.tools.audit import AuditLog
 from app.application.tools.engine import ToolEngine
 from app.application.tools.paths import WorkspaceBoundary
 from app.config.settings import Settings, get_settings
+from app.infrastructure.approval_store_db import PersistentApprovalStore
 from app.infrastructure.db import create_session_factory
 from app.infrastructure.inference_llamacpp import LlamaCppAdapter
 from app.infrastructure.inference_stub import StubInference
@@ -36,7 +35,6 @@ def get_inference() -> InferencePort:
 
 
 _engine: ToolEngine | None = None
-_approval_index: ApprovalIndex | None = None
 
 
 def get_tool_engine() -> ToolEngine:
@@ -44,17 +42,15 @@ def get_tool_engine() -> ToolEngine:
     if _engine is None:
         settings = get_settings()
         boundary = WorkspaceBoundary(Path(settings.workspace_path))
-        approvals = InMemoryApprovalStore()
+        sessions = create_session_factory(settings.database_url)
+        approvals = PersistentApprovalStore(
+            sessions, ttl_seconds=settings.approval_ttl_seconds
+        )
         audit = AuditLog(Path(settings.audit_log_path))
         _engine = ToolEngine(boundary, approvals, audit)
+        # Explicit transition for anything stale across restarts (docs/13 P4).
+        _engine.expire_stale_approvals()
     return _engine
-
-
-def get_approval_index() -> ApprovalIndex:
-    global _approval_index
-    if _approval_index is None:
-        _approval_index = ApprovalIndex()
-    return _approval_index
 
 
 def get_session() -> Iterator[Session]:

@@ -181,3 +181,46 @@ from the device.
 
 Streaming (SSE) is deliberately deferred until after the gate; MVP proves
 non-streaming round-trip first (docs/09 §34 states apply when it exists).
+
+## Priority 4 — Persistent Approvals (DONE)
+
+Approval requests moved from an in-memory side-channel into SQLite
+(`approval_requests` table, migration d5e8f2a7b3c1): arguments live IN the
+record, conversation linkage is stored at creation, and every record ends in
+APPROVED/CONSUMED, REJECTED or EXPIRED — no silent orphaned state. `ApprovalIndex`
+deleted; the store is the single source of truth.
+
+Key engineering findings (directive docs/13 P4):
+
+1. **SQLite transaction discipline.** The chat turn must not hold a write
+   transaction across inference: user message now COMMITS before
+   `run_turn()`; results persist in a second short transaction. Crash
+   property: the user's words survive even if inference dies mid-turn.
+   `busy_timeout` (RUACH_DATABASE_BUSY_TIMEOUT_MS, default 5000) mitigates
+   short contention only — it is NOT a substitute for correct boundaries.
+2. **Failure classification.** Infrastructure failures no longer masquerade
+   as security denials: DB/store outages produce SYSTEM_ERROR + honest
+   "internal system error" text + `tool_execution_error` audit events.
+   Policy denials keep their security events. Both still fail closed;
+   nothing executes on either class of failure. False `tool_denied` audit
+   records are treated as unacceptable (audit = evidence).
+3. **Timezone correctness.** SQLite returns naive datetimes; TTL math must
+   normalize to UTC or expiry skews by the local offset (found on EAT/+3).
+4. **Degenerate sampling hardening.** Bounded resampling (max 3 samples)
+   for echo/fence loops with honest no-action fallback. Known residual:
+   Qwen3-0.6B occasionally burns tokens on reasoning spill; sampling knobs
+   (`/no_think`, repeat penalty) are a P8-hardening candidate, deferred.
+
+Proofs: tests/test_approval_persistence.py A–F + outage-classification
+tests (restart survival via two fresh engine instances over one DB file,
+approve/reject/expiry persisted, stale sweep idempotent, fingerprint
+binding survives restart). Live acceptance against real Qwen backend:
+approval created → server killed/restarted → same approval id approved →
+tool executed; separate run with RUACH_APPROVAL_TTL_SECONDS=8 → late
+approve → honest EXPIRED denial, nothing executed. Full gates green:
+unit 80 passed, ruff clean, mypy clean, live suite 5/5.
+
+Orphan policy (#13): deleting a conversation SETs conversation_id NULL;
+the row stays auditable, cannot be executed via chat (404), and expires
+by TTL at the latest. Direct tools-API approvals are conversation-less by
+design and resolve only through that endpoint.

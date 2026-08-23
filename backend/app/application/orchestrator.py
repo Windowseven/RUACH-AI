@@ -32,7 +32,7 @@ from typing import Any
 
 from app.application.context import USER_SENTINEL
 from app.application.inference import InferencePort
-from app.application.tools.engine import ToolEngine
+from app.application.tools.engine import SYSTEM_ERROR_TEXT, ToolEngine
 from app.application.tools.schemas import ToolRequest
 
 REQUEST_PATTERN = re.compile(
@@ -47,9 +47,16 @@ def has_request_block(text: str) -> bool:
 
 
 def _looks_like_broken_proposal(text: str) -> bool:
-    """A block that opened but never closed (truncation) or closed without
-    well-formed JSON inside. Safe: none of these execute."""
+    """Truncated request blocks OR degenerate echo loops (P4: the 0.6B
+    model occasionally locks into template-header repetition). Safe:
+    none of these execute; a resample goes through the same parser."""
     if REQUEST_TAG_PATTERN.search(text) is None and REQUEST_OPEN_TAG.search(text):
+        return True
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    header_lines = sum(1 for line in lines if line.startswith("###"))
+    if header_lines >= 4:
+        return True
+    if len(lines) >= 4 and len(set(lines)) <= 2:
         return True
     return parse_tool_request(text) is None and has_request_block(text)
 
@@ -70,23 +77,9 @@ def parse_tool_request(text: str) -> dict[str, Any] | None:
 @dataclass
 class PendingTool:
     approval_id: str
-    conversation_id: str
     tool: str
     capability: str
     arguments: dict[str, Any] = field(default_factory=dict)
-
-
-class ApprovalIndex:
-    """Maps pending approval ids to the conversations that requested them."""
-
-    def __init__(self) -> None:
-        self._by_approval: dict[str, str] = {}
-
-    def register(self, approval_id: str, conversation_id: str) -> None:
-        self._by_approval[approval_id] = conversation_id
-
-    def conversation_for(self, approval_id: str) -> str | None:
-        return self._by_approval.get(approval_id)
 
 
 @dataclass
@@ -135,19 +128,28 @@ def _clean(text: str) -> str:
 
 MALFORMED_REPLY = "I formed a malformed tool request, so I took no action."
 
+# The 0.6B model occasionally locks into degenerate loops (template echo,
+# reasoning spill + endless code fences). Bounded resampling keeps this a
+# sampling-quality concern, not a safety one: every sample goes through the
+# same parser and the policy engine regardless (docs/13 P4 hardening).
+MAX_SAMPLES = 3
+
 
 def run_turn(
     inference: InferencePort,
     engine: ToolEngine,
-    approvals: ApprovalIndex,
     prompt: str,
     conversation_id: str = "",
 ) -> TurnResult:
     first = inference.complete(prompt)
-    if _looks_like_broken_proposal(first):
-        # Disciplined single resample for degenerate/truncated proposals.
-        # Never a bypass: whatever comes back goes through the same parser.
+    for _ in range(MAX_SAMPLES - 1):
+        if not _looks_like_broken_proposal(first):
+            break
         first = inference.complete(prompt)
+    if _looks_like_broken_proposal(first):
+        # Still degenerate after bounded resamples: honest no-action reply
+        # instead of echoing template junk at the user.
+        return TurnResult(kind="reply", reply=MALFORMED_REPLY)
     payload = parse_tool_request(first)
     if payload is None:
         if has_request_block(first):
@@ -158,7 +160,7 @@ def run_turn(
     if request is None:
         return TurnResult(kind="reply", reply=MALFORMED_REPLY)
 
-    outcome = engine.submit(request)
+    outcome = engine.submit(request, conversation_id=conversation_id or None)
     common: dict[str, Any] = {
         "tool_capability": request.capability,
         "tool_arguments": dict(request.arguments),
@@ -185,16 +187,22 @@ def run_turn(
             tool_state="FAILED",
             **common,
         )
+    if outcome.state == "SYSTEM_ERROR":
+        # Infrastructure failure: fail-closed, honestly labelled. Never
+        # presented as a security denial and never audited as one.
+        return TurnResult(
+            kind="reply",
+            reply=SYSTEM_ERROR_TEXT,
+            tool_state="SYSTEM_ERROR",
+            **common,
+        )
     assert outcome.approval_id is not None  # AWAITING_APPROVAL always carries one
     pending = PendingTool(
         approval_id=outcome.approval_id,
-        conversation_id=conversation_id,
         tool=request.tool,
         capability=request.capability,
         arguments=dict(request.arguments),
     )
-    if conversation_id:
-        approvals.register(outcome.approval_id, conversation_id)
     return TurnResult(
         kind="awaiting_approval",
         reply=(
@@ -237,6 +245,13 @@ def resolve_decision(
             kind="reply",
             reply="Understood. The action was cancelled; nothing was executed.",
             tool_state="REJECTED",
+        )
+    if outcome.state == "SYSTEM_ERROR":
+        return TurnResult(
+            kind="reply",
+            reply=SYSTEM_ERROR_TEXT,
+            tool_state="SYSTEM_ERROR",
+            tool_capability=capability,
         )
     return TurnResult(
         kind="reply",

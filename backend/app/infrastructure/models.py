@@ -36,6 +36,43 @@ class Conversation(Base):
     )
 
 
+class ApprovalRequest(Base):
+    """Persistent approval record (P4).
+
+    Orphan policy (docs/13 P4 #13): deleting a conversation sets
+    conversation_id to NULL (ondelete=SET NULL); the approval row REMAINS
+    fully auditable. An orphaned PENDING approval cannot be executed through
+    the chat path (pending_conversation -> None -> 404) and dies by TTL at
+    the latest, becoming explicitly EXPIRED. Direct tools-API approvals are
+    conversation-less by design and resolve through that endpoint only.
+    """
+
+    __tablename__ = "approval_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('PENDING', 'APPROVED', 'REJECTED', 'CONSUMED', 'EXPIRED')",
+            name="ck_approval_status",
+        ),
+        Index("ix_approval_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    conversation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
+    )
+    tool_name: Mapped[str] = mapped_column(String(64))
+    capability: Mapped[str] = mapped_column(String(64))
+    arguments_json: Mapped[str] = mapped_column(Text)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    target: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    risk_level: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING")
+    decision: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Message(Base):
     __tablename__ = "messages"
     __table_args__ = (

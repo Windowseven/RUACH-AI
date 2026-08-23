@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_approval_index, get_inference, get_session, get_tool_engine
+from app.api.dependencies import get_inference, get_session, get_tool_engine
 from app.api.middleware import request_id_var
 from app.api.schemas.chat import (
     ApprovalDecisionRequest,
@@ -14,7 +14,6 @@ from app.api.schemas.chat import (
 from app.application import chat_service
 from app.application.conversation_service import ConversationNotFound
 from app.application.inference import InferencePort
-from app.application.orchestrator import ApprovalIndex
 from app.application.tools.engine import ToolEngine
 
 router = APIRouter(tags=["chat"])
@@ -25,7 +24,7 @@ def _response(turn: chat_service.ChatTurn) -> ChatResponse:
     if turn.pending is not None:
         pending_out = PendingApprovalOut(
             approval_id=turn.pending.approval_id,
-            conversation_id=turn.pending.conversation_id or turn.conversation_id,
+            conversation_id=turn.conversation_id,
             tool=turn.pending.tool,
             capability=turn.pending.capability,
             arguments=turn.pending.arguments,
@@ -62,14 +61,12 @@ def chat(
     session: Session = Depends(get_session),
     inference: InferencePort = Depends(get_inference),
     engine: ToolEngine = Depends(get_tool_engine),
-    approvals: ApprovalIndex = Depends(get_approval_index),
 ) -> ChatResponse:
     try:
         turn = chat_service.execute_chat(
             session,
             inference,
             engine,
-            approvals,
             payload.message,
             payload.conversation_id,
         )
@@ -84,11 +81,10 @@ def _decide(
     session: Session,
     inference: InferencePort,
     engine: ToolEngine,
-    approvals: ApprovalIndex,
 ) -> ChatResponse:
     try:
         turn = chat_service.decide_approval(
-            session, inference, engine, approvals, approval_id, approved
+            session, inference, engine, approval_id, approved
         )
     except ConversationNotFound:
         raise HTTPException(status_code=404, detail="Unknown approval request.")
@@ -102,11 +98,10 @@ def approve_tool(
     session: Session = Depends(get_session),
     inference: InferencePort = Depends(get_inference),
     engine: ToolEngine = Depends(get_tool_engine),
-    approvals: ApprovalIndex = Depends(get_approval_index),
 ) -> ChatResponse:
     if not decision.approved:
         raise HTTPException(status_code=422, detail="Use the reject endpoint.")
-    return _decide(approval_id, True, session, inference, engine, approvals)
+    return _decide(approval_id, True, session, inference, engine)
 
 
 @router.post("/chat/approvals/{approval_id}/reject", response_model=ChatResponse)
@@ -115,6 +110,5 @@ def reject_tool(
     session: Session = Depends(get_session),
     inference: InferencePort = Depends(get_inference),
     engine: ToolEngine = Depends(get_tool_engine),
-    approvals: ApprovalIndex = Depends(get_approval_index),
 ) -> ChatResponse:
-    return _decide(approval_id, False, session, inference, engine, approvals)
+    return _decide(approval_id, False, session, inference, engine)

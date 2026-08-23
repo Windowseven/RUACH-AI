@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     inference_max_tokens: int = 384
     inference_temperature: float = 0.2
     context_max_messages: int = 12
+    approval_ttl_seconds: float = 900.0
+    database_busy_timeout_ms: int = 5000
     workspace_path: Path = Field(default_factory=_default_workspace_path)
     audit_log_path: Path = Field(default_factory=_default_audit_log_path)
 

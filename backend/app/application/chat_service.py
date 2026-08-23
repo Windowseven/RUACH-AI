@@ -66,7 +66,6 @@ def execute_chat(
     session: Session,
     inference: InferencePort,
     engine: ToolEngine,
-    approvals: orchestrator.ApprovalIndex,
     message: str,
     conversation_id: str | None = None,
 ) -> ChatTurn:
@@ -74,27 +73,34 @@ def execute_chat(
     conversations = ConversationRepository(session)
     messages = MessageRepository(session)
 
+    # --- Transaction 1: durable turn start (docs/13 P4 #1/#3) -------------
+    # The user message COMMITS before inference. If inference or tool
+    # orchestration crashes, the user's words remain persisted. We never
+    # hold a SQLite write transaction across model inference.
     if conversation_id is None:
         conversation = conversations.create(title=message)
     else:
         conversation = conversations.get(conversation_id)
-
-    # History BEFORE this turn; bounded by configuration, not hardcoded.
+    # History BEFORE this turn; read prior to the append so the current
+    # message is not duplicated into its own context.
     history_rows = messages.recent(
         conversation.id, limit=settings.context_max_messages
     )
+    messages.append(conversation.id, "user", message)
+    session.commit()
+
+    # --- Inference + orchestration: NO outer write transaction held -------
     builder = ContextBuilder(
         RecentMessagesStrategy(max_messages=settings.context_max_messages)
     )
     prompt = builder.build(
         [to_context_message(row) for row in history_rows], message
     )
-
     result = orchestrator.run_turn(
-        inference, engine, approvals, prompt, conversation_id=conversation.id
+        inference, engine, prompt, conversation_id=conversation.id
     )
 
-    messages.append(conversation.id, "user", message)
+    # --- Transaction 2: turn outcome --------------------------------------
     event_json = _tool_event_content(result)
     if event_json is not None:
         messages.append(conversation.id, "tool", event_json)
@@ -117,15 +123,15 @@ def decide_approval(
     session: Session,
     inference: InferencePort,
     engine: ToolEngine,
-    approvals: orchestrator.ApprovalIndex,
     approval_id: str,
     approved: bool,
 ) -> ChatTurn:
-    conversation_id = approvals.conversation_for(approval_id)
+    conversation_id = engine.pending_conversation(approval_id)
     if conversation_id is None:
         raise ConversationNotFound(approval_id)
     conversations = ConversationRepository(session)
     conversation = conversations.get(conversation_id)
+    session.commit()  # release the read snapshot before store/inference work
 
     result = orchestrator.resolve_decision(inference, engine, approval_id, approved)
 

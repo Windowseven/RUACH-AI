@@ -13,13 +13,10 @@ import os
 
 import pytest
 from app.api.dependencies import (
-    get_approval_index,
     get_inference,
     get_session,
     get_tool_engine,
 )
-from app.application.orchestrator import ApprovalIndex
-from app.application.tools.approvals import InMemoryApprovalStore
 from app.application.tools.audit import AuditLog
 from app.application.tools.engine import ToolEngine
 from app.application.tools.paths import WorkspaceBoundary
@@ -50,13 +47,23 @@ def live_client(tmp_path_factory):
         temperature=0.2,
         model_path=settings.model_path or None,
     )
+    from app.infrastructure.approval_store_db import PersistentApprovalStore
+    from app.infrastructure.db import create_session_factory
+
+    # ONE database for conversations AND approvals -- SQLite foreign keys
+    # cannot span files, and production uses a single database_url anyway.
+    live_dir = tmp_path_factory.mktemp("live_stack")
+    live_db = live_dir / "live.db"
+    approval_store = PersistentApprovalStore(
+        create_session_factory(f"sqlite:///{live_db}"), ttl_seconds=900.0
+    )
     tool_engine = ToolEngine(
         WorkspaceBoundary(workspace),
-        InMemoryApprovalStore(ttl_seconds=900.0),
-        AuditLog(tmp_path_factory.mktemp("live_audit") / "audit.jsonl"),
+        approval_store,
+        AuditLog(live_dir / "audit.jsonl"),
     )
 
-    db_engine = get_engine(f"sqlite:///{tmp_path_factory.mktemp('live_db') / 'live.db'}")
+    db_engine = get_engine(f"sqlite:///{live_db}")
     Base.metadata.create_all(db_engine)
 
     from sqlalchemy.orm import sessionmaker
@@ -72,8 +79,6 @@ def live_client(tmp_path_factory):
 
     app.dependency_overrides[get_inference] = lambda: adapter
     app.dependency_overrides[get_tool_engine] = lambda: tool_engine
-    approval_index = ApprovalIndex()
-    app.dependency_overrides[get_approval_index] = lambda: approval_index
     app.dependency_overrides[get_session] = override_session
     yield TestClient(app), workspace
     app.dependency_overrides.clear()
@@ -176,3 +181,4 @@ def test_real_model_coreference_read(live_client) -> None:
     assert any(
         "first line here" in event.get("result", "") for event in tool_events
     ), "file result must participate in conversation context"
+

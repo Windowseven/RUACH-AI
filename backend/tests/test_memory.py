@@ -10,7 +10,6 @@ import json
 
 import pytest
 from app.api.dependencies import (
-    get_approval_index,
     get_inference,
     get_session,
     get_tool_engine,
@@ -51,16 +50,11 @@ def make_client(tmp_path, db_file="shared.db"):
         InMemoryApprovalStore(),
         AuditLog(tmp_path / "audit.jsonl"),
     )
-    approval_index = type(tool_engine) and __import__(
-        "app.application.orchestrator", fromlist=["ApprovalIndex"]
-    ).ApprovalIndex()
-
     app.dependency_overrides[get_inference] = lambda: __import__(
         "app.infrastructure.inference_stub", fromlist=["StubInference"]
     ).StubInference()
     app.dependency_overrides[get_session] = override_session
     app.dependency_overrides[get_tool_engine] = lambda: tool_engine
-    app.dependency_overrides[get_approval_index] = lambda: approval_index
     client = TestClient(app)
     return client, workspace
 

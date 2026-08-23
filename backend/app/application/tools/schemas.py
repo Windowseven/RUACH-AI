@@ -48,12 +48,15 @@ class ApprovalRecord:
     approval_id: str
     tool: str
     capability: str
+    arguments: dict[str, Any]
     arguments_digest: str
     target: str | None
     risk_level: RiskLevel
     state: ApprovalState
     created_at: float
     expires_at: float
+    conversation_id: str | None = None
+    decision: str | None = None
 
 
 class ToolSecurityError(Exception):
