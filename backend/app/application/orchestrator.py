@@ -221,12 +221,11 @@ def resolve_decision(
     approved: bool,
 ) -> TurnResult:
     """Apply a human decision and produce the final conversational reply."""
+    capability = engine.capability_for(approval_id)
     if approved:
         outcome = engine.approve_and_execute(approval_id)
-        capability = engine.capability_for(approval_id)
     else:
         outcome = engine.reject(approval_id)
-        capability = ""
 
     if outcome.state == "COMPLETED":
         final = inference.complete(
@@ -245,6 +244,7 @@ def resolve_decision(
             kind="reply",
             reply="Understood. The action was cancelled; nothing was executed.",
             tool_state="REJECTED",
+            tool_capability=capability,
         )
     if outcome.state == "SYSTEM_ERROR":
         return TurnResult(

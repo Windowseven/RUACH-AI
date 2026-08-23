@@ -259,3 +259,30 @@ env.py note: an explicitly injected sqlalchemy.url (gate/tests) wins;
 otherwise settings/RUACH_DATABASE_URL remain the only configuration source.
 Model sampling hardening (/no_think etc.) stays parked for the future
 runtime-hardening phase per senior-dev instruction.
+
+## Priority 6 — Frontend E2E (DONE)
+
+The UI is now proven by automated browser tests, not manual clicking.
+`backend/tests/test_frontend_e2e.py` spins a fully isolated stack (fresh
+migrated SQLite, own workspace + audit log, stub model runtime) and drives
+headless Google Chrome via Playwright (system Chrome channel; bundled
+Chromium is unavailable on this macOS). Five scenarios: boot checklist must
+reflect REAL /ready states before the workspace shows; chat round trip plus
+cross-turn memory through the full composer→context pipeline; approval
+APPROVE executes the filesystem delete for real (file verified gone on
+disk); approval DENY leaves the file untouched; conversations persist and
+reload from the sidebar after a page reload.
+
+Two real defects found and fixed — exactly what this gate exists for:
+
+1. CSS could defeat the `hidden` attribute (`.boot-screen { display:flex }`
+   beats the UA stylesheet), so the boot overlay never visually dismissed.
+   Global guard added: `[hidden] { display:none !important }`.
+2. Rejecting an approval returned no capability in the tool activity line
+   (`TOOL — REJECTED`). The decision record knows its capability regardless
+   of outcome; orchestrator now carries it on REJECTED like every other
+   state.
+
+Tool-activity vocabulary in the UI now distinguishes policy DENIED from
+user REJECTED. Playwright deps are isolated under the optional `e2e`
+extra; the suite skips cleanly without them.

@@ -1,6 +1,9 @@
 /* RUACH workspace + boot — consumes tokens.css only. */
 
 * { box-sizing: border-box; }
+/* Author display rules must never defeat the hidden attribute
+   (boot screen, workspace, offline banner all toggle via [hidden]). */
+[hidden] { display: none !important; }
 html, body { height: 100%; }
 body {
   margin: 0;
