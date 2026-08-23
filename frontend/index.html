@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <title>RUACH</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='6' fill='%23d8a657'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/css/tokens.css" />
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+
+  <!-- BOOT EXPERIENCE (docs/09 §6–§10) -->
+  <section id="boot-screen" class="boot-screen" aria-live="polite">
+    <div class="boot-inner">
+      <p class="boot-mark">RUACH</p>
+      <div class="boot-orb" aria-hidden="true"><span class="orb"></span></div>
+      <p class="boot-tagline">LOCAL INTELLIGENCE</p>
+      <hr class="boot-rule" />
+      <ul class="boot-checklist" id="boot-checklist">
+        <li data-check="core"><span class="check-label">CORE</span><span class="check-dots"></span><span class="check-state">WAIT</span></li>
+        <li data-check="storage"><span class="check-label">STORAGE</span><span class="check-dots"></span><span class="check-state">WAIT</span></li>
+        <li data-check="inference"><span class="check-label">INFERENCE</span><span class="check-dots"></span><span class="check-state">WAIT</span></li>
+        <li data-check="tools"><span class="check-label">TOOLS</span><span class="check-dots"></span><span class="check-state">LOCKED</span></li>
+        <li data-check="security"><span class="check-label">SECURITY</span><span class="check-dots"></span><span class="check-state">READY</span></li>
+      </ul>
+      <hr class="boot-rule" />
+      <p class="boot-status" id="boot-status">CONNECTING</p>
+      <div class="boot-error" id="boot-error" hidden>
+        <p class="boot-error-title" id="boot-error-title">UNABLE TO INITIALIZE</p>
+        <p class="boot-error-detail" id="boot-error-detail"></p>
+        <div class="boot-error-actions">
+          <button type="button" class="btn btn-quiet" id="boot-retry">RETRY</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- WORKSPACE (docs/09 §23) -->
+  <main id="workspace" class="workspace" hidden>
+    <header class="topbar">
+      <button type="button" class="icon-btn drawer-toggle" id="drawer-toggle" aria-label="Open menu" aria-expanded="false">
+        ☰
+      </button>
+      <span class="topbar-mark">RUACH</span>
+      <span class="topbar-status" id="connection-badge" title="Local backend connection">
+        <span class="dot dot-ok" aria-hidden="true"></span>LOCAL
+      </span>
+    </header>
+
+    <div class="body-row">
+      <aside class="sidebar" id="sidebar" aria-label="Conversations">
+        <button type="button" class="new-chat-btn" id="new-chat">+ New Chat</button>
+        <nav class="conversation-list" id="conversation-list" aria-label="Conversation history"></nav>
+        <footer class="sidebar-footer">
+          <span class="mono muted">runtime: local<br />privacy: on-device</span>
+        </footer>
+      </aside>
+      <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+
+      <section class="chat-column">
+        <div class="messages" id="messages" aria-live="polite">
+          <!-- empty state (docs/09 §28) -->
+          <div class="empty-state" id="empty-state">
+            <p class="empty-mark">RUACH</p>
+            <p class="empty-question">What are we working on?</p>
+            <div class="empty-suggestions mono" aria-hidden="true">
+              <span>explore my files</span><span>explain something</span><span>help me build</span>
+            </div>
+          </div>
+        </div>
+        <form class="composer" id="composer">
+          <textarea id="composer-input" rows="1" placeholder="Ask Ruach…" aria-label="Message"></textarea>
+          <button type="submit" class="send-btn" id="send-btn" aria-label="Send" disabled>↑</button>
+        </form>
+      </section>
+    </div>
+
+    <div class="offline-banner" id="offline-banner" hidden>
+      RUACH OFFLINE — the local server is unreachable. <button type="button" class="btn btn-quiet" id="reconnect-btn">RECONNECT</button>
+    </div>
+  </main>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
