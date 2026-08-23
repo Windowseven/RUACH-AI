@@ -25,5 +25,5 @@ htmlcov/
 staging/models/**/*.gguf
 
 # Local Android platform-tools + transfer bundles
-tools/
+/tools/
 staging/*.tar.gz
