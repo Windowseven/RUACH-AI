@@ -53,7 +53,23 @@ Rules:
 - Paths are relative to the user's workspace.
 - Destructive actions always require explicit human approval; do not \
 claim an action succeeded before its result is returned to you.
-- When you do not need a tool, answer in plain prose without any block."""
+- When you do not need a tool, answer in plain prose without any block.
+
+Examples of correct behaviour:
+
+User message: read notes.txt
+Correct output:
+<tool_request>{{"tool": "filesystem", "capability": "filesystem.read", "arguments": {{"path": "notes.txt"}}}}</tool_request>
+
+User message: list my files
+Correct output:
+<tool_request>{{"tool": "filesystem", "capability": "filesystem.list", "arguments": {{"path": "."}}}}</tool_request>
+
+User message: What is the capital of France?
+Correct output:
+Paris is the capital of France.
+
+Emit exactly one block or plain prose - never both, never any other format."""
 
 USER_SENTINEL = "### USER MESSAGE ###"
 

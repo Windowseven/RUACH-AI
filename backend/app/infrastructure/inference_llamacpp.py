@@ -28,12 +28,14 @@ class LlamaCppAdapter:
         timeout_seconds: float,
         model_path: str | None = None,
         max_tokens: int = 256,
+        temperature: float = 0.2,
         opener: Any = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model_name = model_name
         self._timeout = timeout_seconds
         self._max_tokens = max_tokens
+        self._temperature = temperature
         self._model_path = Path(model_path) if model_path else None
         self._opener = opener if opener is not None else urllib.request.urlopen
 
@@ -83,7 +85,11 @@ class LlamaCppAdapter:
         status, raw = self._request(
             "POST",
             "/completion",
-            {"prompt": prompt, "n_predict": self._max_tokens},
+            {
+                "prompt": prompt,
+                "n_predict": self._max_tokens,
+                "temperature": self._temperature,
+            },
         )
         if status == 404:
             raise ModelNotFound(self._model_name)

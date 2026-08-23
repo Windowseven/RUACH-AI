@@ -37,6 +37,12 @@ def _response(turn: chat_service.ChatTurn) -> ChatResponse:
             capability=turn.tool_capability,
             arguments=turn.tool_arguments,
         )
+    elif turn.pending is not None:
+        tool_out = ToolActivityOut(
+            state="AWAITING_APPROVAL",
+            capability=turn.pending.capability,
+            arguments=turn.pending.arguments,
+        )
     return ChatResponse(
         data=ChatResponseData(
             message_id=turn.message.id,
