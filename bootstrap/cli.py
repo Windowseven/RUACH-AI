@@ -7,6 +7,7 @@ Stdlib-only: safe to run with any system Python ≥ 3.11 via ./ruach.
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -223,8 +224,197 @@ def cmd_doctor() -> int:
         _check("Setup state", True, "not initialized yet")
 
     print()
+    print("── application ──")
+    healthy &= _check_application()
+
+    print()
+    print("── runtime configuration ──")
+    healthy &= _check_runtime_config()
+
+    print()
     print("RUACH is healthy." if healthy else "Problems detected.")
     return 0 if healthy else 1
+
+
+_BACKEND_PACKAGES = ("fastapi", "uvicorn", "sqlalchemy", "alembic", "pydantic_settings")
+
+
+def _check_application() -> bool:
+    """Backend deps + migration state. Honest: missing is reported, never hidden."""
+    healthy = True
+    missing = []
+    for package in _BACKEND_PACKAGES:
+        try:
+            __import__(package)
+        except ImportError:
+            missing.append(package)
+    if missing:
+        healthy &= _check(
+            "Backend dependencies", False, f"missing: {', '.join(missing)} (create .venv)"
+        )
+    else:
+        healthy &= _check("Backend dependencies", True)
+
+    versions_dir = ROOT / "backend" / "migrations" / "versions"
+    heads = _migration_heads(versions_dir)
+    if len(heads) == 1:
+        healthy &= _check("Migration chain", True, f"single head {next(iter(heads))}")
+    elif not heads:
+        healthy &= _check("Migration chain", False, "no migrations found")
+    else:
+        healthy &= _check(
+            "Migration chain", False, f"MULTIPLE HEADS: {', '.join(sorted(heads))}"
+        )
+
+    db_path = Path.home() / ".ruach" / "data" / "ruach.db"
+    if not db_path.exists():
+        _check("Database", True, "not created yet (first `ruach start` migrates it)")
+        return healthy
+    applied = _applied_migration(db_path)
+    if applied is None:
+        healthy &= _check("Database schema", False, "no alembic_version; boot will refuse")
+    elif len(heads) == 1 and applied != next(iter(heads)):
+        healthy &= _check(
+            "Database schema", False, f"at {applied}, head is {next(iter(heads))}; run alembic upgrade"
+        )
+    else:
+        healthy &= _check("Database schema", True, f"at head {applied}")
+    return healthy
+
+
+def _migration_heads(versions_dir: Path) -> set[str]:
+    """Parse revision/down_revision links without importing alembic."""
+    import re
+
+    revisions: dict[str, str | None] = {}
+    if not versions_dir.is_dir():
+        return set()
+    for path in versions_dir.glob("*.py"):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        rev_match = re.search(r'^revision(?::\s*str)?\s*=\s*["\']([^"\']+)["\']', text, re.M)
+        down_match = re.search(r'^down_revision(?::[^=]*)?\s*=\s*(.+)$', text, re.M)
+        if rev_match is None:
+            continue
+        down_raw = down_match.group(1).strip() if down_match else ""
+        if down_raw.startswith(("None",)):
+            down: str | None = None
+        else:
+            quoted = re.search(r'["\']([^"\']+)["\']', down_raw)
+            down = quoted.group(1) if quoted else None
+        revisions[rev_match.group(1)] = down
+    children = {down for down in revisions.values() if down is not None}
+    return {rev for rev in revisions if rev not in children}
+
+
+def _applied_migration(db_path: Path) -> str | None:
+    import sqlite3
+
+    try:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as connection:
+            row = connection.execute(
+                "SELECT version_num FROM alembic_version LIMIT 1"
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    return str(row[0]) if row else None
+
+
+def _check_runtime_config() -> bool:
+    from bootstrap.runtime import (
+        DEFAULT_CONFIG_PATH,
+        LLAMA_SERVER_BIN,
+        load_config,
+    )
+
+    healthy = True
+    config = {}
+    if DEFAULT_CONFIG_PATH.is_file():
+        config = load_config(DEFAULT_CONFIG_PATH)
+        healthy &= _check(
+            "Generated config", True, f"{DEFAULT_CONFIG_PATH} ({len(config)} keys)"
+        )
+    else:
+        _check("Generated config", True, f"none at {DEFAULT_CONFIG_PATH} (stub fallback)")
+
+    runtime = os.environ.get("RUACH_MODEL_RUNTIME") or config.get(
+        "RUACH_MODEL_RUNTIME", "llama_cpp"
+    )
+    if runtime == "llama_cpp":
+        model_path = Path(os.environ.get("RUACH_MODEL_PATH") or config.get("RUACH_MODEL_PATH", ""))
+        model_ok = model_path.is_file() and model_path.stat().st_size > 0
+        healthy &= _check(
+            "Model artifact", model_ok, str(model_path) if model_ok else f"missing: {model_path}"
+        )
+        binary_ok = LLAMA_SERVER_BIN.is_file() and os.access(LLAMA_SERVER_BIN, os.X_OK)
+        healthy &= _check("llama-server binary", binary_ok, str(LLAMA_SERVER_BIN))
+    else:
+        healthy &= _check("Model runtime", True, runtime)
+
+    workspace = Path(os.environ.get("RUACH_WORKSPACE_PATH") or Path.home() / ".ruach" / "workspace")
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+        probe = workspace / ".doctor-write-probe"
+        probe.write_text("x", encoding="utf-8")
+        probe.unlink()
+        healthy &= _check("Workspace writable", True, str(workspace))
+    except OSError as error:
+        healthy &= _check("Workspace writable", False, str(error))
+    return healthy
+
+
+def cmd_start(
+    config_path: Path,
+    run_dir: Path,
+    backend_port: int | None,
+    stub: bool,
+    no_browser: bool,
+) -> int:
+    from bootstrap.runtime import AlreadyRunning, StartError, start
+
+    print("RUACH START")
+    print("═" * 32)
+    try:
+        stack = start(
+            config_path=config_path,
+            run_dir=run_dir,
+            backend_port=backend_port,
+            stub=stub,
+            browser=not no_browser,
+        )
+    except AlreadyRunning as error:
+        print(f"START REFUSED: {error}")
+        return 1
+    except StartError as error:
+        print(f"START FAILED: {error}")
+        return 1
+
+    print(f"[start] ready          : {stack.ui_url}")
+    print("Press Ctrl+C to stop.")
+    try:
+        stack.backend.wait()
+    except KeyboardInterrupt:
+        print()
+    finally:
+        stack.shutdown()
+        print("[stop] RUACH stopped.")
+    return 0
+
+
+def cmd_stop(run_dir: Path) -> int:
+    from bootstrap.runtime import stop
+
+    return stop(run_dir=run_dir)
+
+
+def cmd_status(run_dir: Path) -> int:
+    import json as _json
+
+    from bootstrap.runtime import status
+
+    state = status(run_dir=run_dir)
+    print(_json.dumps(state, indent=2))
+    backend_running = bool(state["backend"]["running"]) if isinstance(state, dict) else False
+    return 0 if backend_running else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -255,6 +445,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     subparsers.add_parser("doctor", help="diagnose installation health")
 
+    default_run_dir = Path.home() / ".ruach" / "run"
+
+    start_parser = subparsers.add_parser(
+        "start", help="start the local stack (model runtime if configured + UI/API)"
+    )
+    start_parser.add_argument(
+        "--config", type=Path, default=Path.home() / ".ruach" / "config" / "ruach.env"
+    )
+    start_parser.add_argument("--run-dir", type=Path, default=default_run_dir)
+    start_parser.add_argument("--port", type=int, default=None, help="backend port override")
+    start_parser.add_argument(
+        "--stub", action="store_true", help="use the deterministic stub model runtime"
+    )
+    start_parser.add_argument("--no-browser", action="store_true")
+
+    stop_parser = subparsers.add_parser("stop", help="stop the running stack")
+    stop_parser.add_argument("--run-dir", type=Path, default=default_run_dir)
+
+    status_parser = subparsers.add_parser("status", help="show stack process state")
+    status_parser.add_argument("--run-dir", type=Path, default=default_run_dir)
+
     args = parser.parse_args(argv)
     if args.command == "setup":
         return cmd_setup(
@@ -264,6 +475,12 @@ def main(argv: list[str] | None = None) -> int:
             registry=args.registry,
             assume_yes=args.yes,
         )
+    if args.command == "start":
+        return cmd_start(args.config, args.run_dir, args.port, args.stub, args.no_browser)
+    if args.command == "stop":
+        return cmd_stop(args.run_dir)
+    if args.command == "status":
+        return cmd_status(args.run_dir)
     return cmd_doctor()
 
 

@@ -286,3 +286,34 @@ Two real defects found and fixed — exactly what this gate exists for:
 Tool-activity vocabulary in the UI now distinguishes policy DENIED from
 user REJECTED. Playwright deps are isolated under the optional `e2e`
 extra; the suite skips cleanly without them.
+
+## Priority 11 — Full `./ruach start` wiring (DONE)
+
+`ruach start` is now the real entry point a stranger uses: it loads the
+generated env config (`~/.ruach/config/ruach.env`; process environment
+wins over file), spawns llama-server when the runtime is configured,
+launches uvicorn serving UI+API, and verifies readiness HONESTLY —
+inference readiness requires an actual one-token completion (a bare
+/health poll lies during model load), backend readiness is the same
+/api/v1/ready contract the boot screen uses. PID files make `ruach stop`
+and `ruach status` work from any shell; double-start is refused; SIGTERM/
+Ctrl+C tears the whole stack down cleanly (verified: no stray processes).
+
+Doctor upgrades: backend dependency imports, migration-chain head parsing
+(stdlib regex, multi-head = failure), applied-vs-head schema check on the
+real DB, generated-config parse, model artifact + llama-server binary
+presence, workspace writability.
+
+Acceptance against the REAL stack (Qwen3-0.6B via .build/runtime/
+llama-server): start → ready in 35s; live chat round trip (68s CPU);
+"delete report.txt" → persisted PENDING approval with correct capability/
+args; full `ruach stop`; restart via `ruach start`; approval resolved
+across that restart → COMPLETED, file verifiably deleted; stop leaves no
+processes. Also observed and correct-by-design: Qwen proposed a malformed
+write ("Content must be a string") and the engine answered an honest
+policy denial instead of executing anything.
+
+Tests: tests_bootstrap/test_runtime.py (8) covers env-file parsing,
+config precedence, honest inference-readiness probing against a fake
+model server (loading-state must NOT pass), stub-stack end-to-end with
+real uvicorn child, double-start refusal, clean stop semantics.
