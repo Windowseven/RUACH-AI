@@ -12,9 +12,6 @@ are not part of the default unit gate.
 import os
 
 import pytest
-from fastapi.testclient import TestClient
-
-from app.api import dependencies
 from app.api.dependencies import (
     get_approval_index,
     get_inference,
@@ -22,8 +19,8 @@ from app.api.dependencies import (
     get_tool_engine,
 )
 from app.application.orchestrator import ApprovalIndex
-from app.application.tools.audit import AuditLog
 from app.application.tools.approvals import InMemoryApprovalStore
+from app.application.tools.audit import AuditLog
 from app.application.tools.engine import ToolEngine
 from app.application.tools.paths import WorkspaceBoundary
 from app.config.settings import get_settings
@@ -31,6 +28,7 @@ from app.infrastructure.db import get_engine
 from app.infrastructure.inference_llamacpp import LlamaCppAdapter
 from app.infrastructure.models import Base
 from app.main import app
+from fastapi.testclient import TestClient
 
 pytestmark = [
     pytest.mark.skipif(
