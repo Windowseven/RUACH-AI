@@ -129,7 +129,10 @@ def collect_sqlite() -> dict:
 
 
 def collect_runtime(env: dict[str, str]) -> dict:
-    from bootstrap.runtime_resolver import configured_binary_override, resolve_llama_server
+    from bootstrap.runtime_resolver import (
+        configured_binary_override,
+        resolve_llama_server,
+    )
 
     resolved = resolve_llama_server(explicit=configured_binary_override(env))
     if not resolved.found or resolved.path is None:

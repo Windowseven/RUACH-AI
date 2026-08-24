@@ -1,7 +1,8 @@
-import tomllib
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+
+import tomllib
 
 from ruach_setup.capability import (
     DeviceCapabilityProfile,

@@ -3,11 +3,17 @@
 Development/bootstrap tooling. Reports the truth about the machine it runs
 on and never implies macOS behavior proves Android/Termux behavior.
 Stdlib-only: safe to run with any system Python ≥ 3.11 via ./ruach.
+
+Doctor/setup/status follow docs/15-17: doctor is read-only diagnostics
+(--json/--verbose/--check-runtime/--check-inference); setup plans before
+it touches anything (--plan), validates requested modes against device
+capabilities (--mode), and runs a guided flow interactively.
 """
 
 import argparse
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -17,7 +23,6 @@ from ruach_setup.capability import (
     CapabilityAssessment,
     analyze,
     build_profile,
-    load_tier_config,
 )
 from ruach_setup.device import SystemEnvironmentReader
 from ruach_setup.recommend import recommend
@@ -110,19 +115,108 @@ def _check(label: str, ok: bool, detail: str = "") -> bool:
     return ok
 
 
+# --------------------------------------------------------------------------
+# Setup (docs/15 §24-§28, docs/16 §13-§18, docs/17 §6-§22)
+
+
+def _setup_plan_only() -> int:
+    """./ruach setup --plan — show the plan WITHOUT executing it."""
+    from bootstrap.doctor_engine import run_doctor
+    from ruach_setup.planner import render_plan
+
+    report = run_doctor(probe_network_enabled=False)
+    print("RUACH SETUP — INSTALLATION PLAN (preview only)")
+    print("═" * 32)
+    print(render_plan(report.plan))
+    print()
+    print("Why this plan:")
+    for reason in report.decision["reason"]:
+        print(f"  - {reason}")
+    print()
+    print("No changes were made. Run ./ruach setup to execute this plan.")
+    return 0
+
+
+def _capabilities_for_mode_validation(assessment: CapabilityAssessment):
+    from bootstrap.runtime_resolver import resolve_llama_server
+    from ruach_setup.diagnostics import InferenceLevel
+    from ruach_setup.profiles import DecisionInput
+
+    profile = assessment.profile
+    resolved = resolve_llama_server(home=Path.home())
+    compilers = frozenset(
+        tool
+        for tool in ("clang", "gcc", "make", "cmake", "ninja")
+        if shutil.which(tool)
+    )
+    return DecisionInput(
+        architecture_supported=profile.architecture_supported,
+        abi=profile.abi,
+        ram_total_bytes=profile.ram_total_bytes,
+        ram_available_bytes=profile.ram_available_bytes,
+        storage_free_bytes=profile.storage_available_bytes,
+        python_ok=sys.version_info >= (3, 11),
+        python_version=profile.python_version,
+        compilers_present=compilers,
+        rust_available=bool(shutil.which("rustc")),
+        native_binary_found=resolved.found,
+        inference_level=(
+            InferenceLevel.EXECUTABLE if resolved.found else InferenceLevel.NOT_TESTED
+        ),
+        resource_tier=assessment.tier,
+        environment_status=assessment.environment_status,
+    )
+
+
 def cmd_setup(
     install_model: str | None,
     models_root: Path,
     source_url: str | None,
     registry: Path | None,
     assume_yes: bool,
+    plan_only: bool = False,
+    non_interactive: bool = False,
+    mode: str = "auto",
 ) -> int:
+    if plan_only:
+        return _setup_plan_only()
+
+    interactive = not non_interactive and not assume_yes and sys.stdin.isatty()
+    if interactive:
+        from bootstrap.guided_setup import run_guided_setup
+
+        return run_guided_setup(
+            reader=input,
+            writer=print,
+            interactive=True,
+            requested_mode=mode,
+            install_model_request=install_model or "auto",
+            models_root=models_root,
+        )
+
+    # ---- Non-interactive path: deterministic, script-safe, no prompts -----
     print("RUACH SETUP")
     print("═" * 32)
     raw = SystemEnvironmentReader().read()
     assessment = analyze(build_profile(raw))
     _print_environment(assessment)
     _print_recommendation_if_target(assessment)
+
+    if mode != "auto":
+        from ruach_setup.profiles import validate_mode
+
+        ok, message, available = validate_mode(
+            _capabilities_for_mode_validation(assessment), mode
+        )
+        if not ok:
+            print()
+            print(message)
+            if available:
+                print()
+                print("Available modes:")
+                for available_mode in available:
+                    print(f"  {available_mode}")
+            return 2
 
     if install_model is None:
         return 0
@@ -187,189 +281,32 @@ def cmd_setup(
     return 0
 
 
-def cmd_doctor() -> int:
+# --------------------------------------------------------------------------
+# Doctor (docs/15 §29-§32, docs/16 §17, docs/17 §24-§28)
+
+
+def cmd_doctor(
+    json_output: bool = False,
+    verbose: bool = False,
+    check_runtime: bool = False,
+    check_inference: bool = False,
+) -> int:
+    """Read-only deep diagnostics. Never modifies the system (docs/15 §4)."""
+    from bootstrap.doctor_engine import render_concise, render_verbose, run_doctor
+
+    report = run_doctor(check_runtime=check_runtime, check_inference=check_inference)
+
+    if json_output:
+        print(json.dumps(report.to_json(), indent=2))
+        return 0 if report.status == "READY" else 1
+
     print("RUACH DOCTOR")
     print("═" * 32)
-    healthy = True
-
-    version_ok = sys.version_info >= (3, 11)
-    healthy &= _check("Python", version_ok, ".".join(str(v) for v in sys.version_info[:3]))
-
-    healthy &= _check(
-        "Repository layout",
-        (ROOT / "backend" / "app").is_dir() and (ROOT / "docs").is_dir(),
-    )
-    healthy &= _check("RUACH source", (ROOT / "ruach_setup").is_dir())
-
-    try:
-        config = load_tier_config()
-        healthy &= _check(
-            "Tier configuration", True, f"reserve={config.reserve_bytes // (1024**2)}MB"
-        )
-    except (OSError, ValueError, KeyError) as error:
-        healthy &= _check("Tier configuration", False, str(error))
-
-    try:
-        runtimes = load_runtimes()
-        models = load_models()
-        healthy &= _check("Registries", True, f"{len(runtimes)} runtime(s), {len(models)} model(s)")
-    except (OSError, ValueError, KeyError) as error:
-        healthy &= _check("Registries", False, str(error))
-
-    state_file = Path.home() / ".ruach" / "setup_state.json"
-    if state_file.is_file():
-        try:
-            state = json.loads(state_file.read_text(encoding="utf-8"))
-            healthy &= _check("Setup state", True, state.get("stage", "?"))
-        except ValueError as error:
-            healthy &= _check("Setup state", False, f"corrupt: {error}")
-    else:
-        _check("Setup state", True, "not initialized yet")
-
-    print()
-    print("── application ──")
-    healthy &= _check_application()
-
-    print()
-    print("── runtime configuration ──")
-    healthy &= _check_runtime_config()
-
+    print(render_verbose(report) if verbose else render_concise(report))
+    healthy = report.status == "READY"
     print()
     print("RUACH is healthy." if healthy else "Problems detected.")
     return 0 if healthy else 1
-
-
-_BACKEND_PACKAGES = ("fastapi", "uvicorn", "sqlalchemy", "alembic", "pydantic_settings")
-
-
-def _check_application() -> bool:
-    """Backend deps + migration state. Honest: missing is reported, never hidden."""
-    healthy = True
-    missing = []
-    for package in _BACKEND_PACKAGES:
-        try:
-            __import__(package)
-        except ImportError:
-            missing.append(package)
-    if missing:
-        healthy &= _check(
-            "Backend dependencies", False, f"missing: {', '.join(missing)} (create .venv)"
-        )
-    else:
-        healthy &= _check("Backend dependencies", True)
-
-    versions_dir = ROOT / "backend" / "migrations" / "versions"
-    heads = _migration_heads(versions_dir)
-    if len(heads) == 1:
-        healthy &= _check("Migration chain", True, f"single head {next(iter(heads))}")
-    elif not heads:
-        healthy &= _check("Migration chain", False, "no migrations found")
-    else:
-        healthy &= _check(
-            "Migration chain", False, f"MULTIPLE HEADS: {', '.join(sorted(heads))}"
-        )
-
-    db_path = Path.home() / ".ruach" / "data" / "ruach.db"
-    if not db_path.exists():
-        _check("Database", True, "not created yet (first `ruach start` migrates it)")
-        return healthy
-    applied = _applied_migration(db_path)
-    if applied is None:
-        healthy &= _check("Database schema", False, "no alembic_version; boot will refuse")
-    elif len(heads) == 1 and applied != next(iter(heads)):
-        healthy &= _check(
-            "Database schema", False, f"at {applied}, head is {next(iter(heads))}; run alembic upgrade"
-        )
-    else:
-        healthy &= _check("Database schema", True, f"at head {applied}")
-    return healthy
-
-
-def _migration_heads(versions_dir: Path) -> set[str]:
-    """Parse revision/down_revision links without importing alembic."""
-    import re
-
-    revisions: dict[str, str | None] = {}
-    if not versions_dir.is_dir():
-        return set()
-    for path in versions_dir.glob("*.py"):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        rev_match = re.search(r'^revision(?::\s*str)?\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
-        down_match = re.search(r'^down_revision(?::[^=]*)?\s*=\s*(.+)$', text, re.MULTILINE)
-        if rev_match is None:
-            continue
-        down_raw = down_match.group(1).strip() if down_match else ""
-        if down_raw.startswith(("None",)):
-            down: str | None = None
-        else:
-            quoted = re.search(r'["\']([^"\']+)["\']', down_raw)
-            down = quoted.group(1) if quoted else None
-        revisions[rev_match.group(1)] = down
-    children = {down for down in revisions.values() if down is not None}
-    return {rev for rev in revisions if rev not in children}
-
-
-def _applied_migration(db_path: Path) -> str | None:
-    import sqlite3
-
-    try:
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as connection:
-            row = connection.execute(
-                "SELECT version_num FROM alembic_version LIMIT 1"
-            ).fetchone()
-    except sqlite3.Error:
-        return None
-    return str(row[0]) if row else None
-
-
-def _check_runtime_config() -> bool:
-    from bootstrap.runtime import DEFAULT_CONFIG_PATH, load_config
-    from bootstrap.runtime_resolver import resolve_llama_server
-
-    healthy = True
-    config = {}
-    if DEFAULT_CONFIG_PATH.is_file():
-        config = load_config(DEFAULT_CONFIG_PATH)
-        healthy &= _check(
-            "Generated config", True, f"{DEFAULT_CONFIG_PATH} ({len(config)} keys)"
-        )
-    else:
-        _check("Generated config", True, f"none at {DEFAULT_CONFIG_PATH} (stub fallback)")
-
-    runtime = os.environ.get("RUACH_MODEL_RUNTIME") or config.get(
-        "RUACH_MODEL_RUNTIME", "llama_cpp"
-    )
-    if runtime == "llama_cpp":
-        model_path = Path(os.environ.get("RUACH_MODEL_PATH") or config.get("RUACH_MODEL_PATH", ""))
-        model_ok = model_path.is_file() and model_path.stat().st_size > 0
-        healthy &= _check(
-            "Model artifact", model_ok, str(model_path) if model_ok else f"missing: {model_path}"
-        )
-        resolved = resolve_llama_server(
-            explicit=os.environ.get("RUACH_LLAMA_SERVER_BIN") or config.get(
-                "RUACH_LLAMA_SERVER_BIN"
-            ),
-        )
-        healthy &= _check(
-            "llama-server binary",
-            resolved.found,
-            str(resolved.path) + f" (source: {resolved.source})"
-            if resolved.found
-            else "not found in config/user/project/PATH",
-        )
-    else:
-        healthy &= _check("Model runtime", True, runtime)
-
-    workspace = Path(os.environ.get("RUACH_WORKSPACE_PATH") or Path.home() / ".ruach" / "workspace")
-    try:
-        workspace.mkdir(parents=True, exist_ok=True)
-        probe = workspace / ".doctor-write-probe"
-        probe.write_text("x", encoding="utf-8")
-        probe.unlink()
-        healthy &= _check("Workspace writable", True, str(workspace))
-    except OSError as error:
-        healthy &= _check("Workspace writable", False, str(error))
-    return healthy
 
 
 def _start_failure(error: Exception) -> int:
@@ -488,16 +425,84 @@ def cmd_stop(run_dir: Path) -> int:
     return stop(run_dir=run_dir)
 
 
-def cmd_status(run_dir: Path) -> int:
-    import json as _json
+def _effective_env() -> dict[str, str]:
+    from bootstrap.runtime import load_config, merged_environment
 
-    from bootstrap.runtime import status
+    if DEFAULT_CONFIG_PATH.is_file():
+        try:
+            return merged_environment(load_config(DEFAULT_CONFIG_PATH))
+        except Exception:  # noqa: BLE001 - unreadable config degrades honestly
+            return {}
+    return {}
 
-    state = status(run_dir=run_dir)
-    print(_json.dumps(state, indent=2))
-    backend_raw = state.get("backend") if isinstance(state, dict) else None
-    backend_running = bool(backend_raw.get("running")) if isinstance(backend_raw, dict) else False
+
+def _render_status_human(state: dict) -> int:
+    """Human-readable status block (docs/16 §19)."""
+    lifecycle = state.get("lifecycle", {}) if isinstance(state, dict) else {}
+    backend = state.get("backend", {}) if isinstance(state, dict) else {}
+    lifecycle_state = lifecycle.get("state", "STOPPED")
+    api_label = {
+        "HEALTHY": "READY",
+        "UNRESPONSIVE": "ERROR",
+        "STARTING": "STARTING",
+        "STOPPING": "STOPPING",
+    }.get(lifecycle_state, "STOPPED")
+
+    env = _effective_env()
+    runtime_kind = env.get("RUACH_MODEL_RUNTIME", "llama_cpp")
+    model_path_text = env.get("RUACH_MODEL_PATH", "")
+    model_path = Path(model_path_text).expanduser() if model_path_text else None
+    model_ok = bool(model_path and model_path.is_file())
+    if runtime_kind == "stub":
+        model_label = "(deterministic stub)"
+    elif model_ok:
+        model_label = model_path.name  # type: ignore[union-attr]
+    else:
+        model_label = "not configured"
+    inference_label = (
+        "READY" if (model_ok or runtime_kind == "stub") else "NOT READY"
+    )
+
+    storage_label = "OK"
+    try:
+        free = shutil.disk_usage(Path.home()).free
+        storage_label = "OK" if free > 1024**3 else "LOW"
+    except OSError:
+        storage_label = "UNKNOWN"
+
+    backend_running = bool(backend.get("running"))
+    if backend_running and api_label == "READY" and inference_label == "READY":
+        overall = "READY"
+    elif backend_running:
+        overall = "DEGRADED"
+    else:
+        overall = "STOPPED"
+
+    print("RUACH STATUS")
+    print()
+    print(f"Runtime       : {runtime_kind}")
+    print(f"Backend       : {'READY' if backend_running else 'STOPPED'}")
+    print(f"Inference     : {inference_label}")
+    print(f"Model         : {model_label}")
+    print(f"API           : {api_label}")
+    print(f"Storage       : {storage_label}")
+    print()
+    print(f"Overall       : {overall}")
     return 0 if backend_running else 1
+
+
+def cmd_status(run_dir: Path, json_output: bool = False) -> int:
+    from bootstrap.runtime import status as runtime_status
+
+    state = runtime_status(run_dir=run_dir)
+    if json_output:
+        print(json.dumps(state, indent=2))
+        backend_raw = state.get("backend") if isinstance(state, dict) else None
+        backend_running = (
+            bool(backend_raw.get("running")) if isinstance(backend_raw, dict) else False
+        )
+        return 0 if backend_running else 1
+    return _render_status_human(state)
 
 
 def cmd_verify(live: bool) -> int:
@@ -635,7 +640,7 @@ HELP_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
         [
             ("status", "Show the current RUACH status."),
             ("verify", "Run the full installation gate (--live adds real-model smoke)."),
-            ("doctor", "Diagnose common problems."),
+            ("doctor", "Diagnose common problems (--verbose/--json for detail)."),
             ("probe", "Record a device benchmark (docs/13)."),
         ],
     ),
@@ -708,7 +713,40 @@ def main(argv: list[str] | None = None) -> int:
     setup_parser.add_argument(
         "--yes", action="store_true", help="assume yes; do not prompt for confirmation"
     )
-    subparsers.add_parser("doctor", help="diagnose installation health")
+    setup_parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="show the installation plan without executing anything",
+    )
+    setup_parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="never prompt; deterministic defaults (automation-safe)",
+    )
+    setup_parser.add_argument(
+        "--mode",
+        default="auto",
+        choices=["auto", "native", "hybrid", "lightweight", "cli"],
+        help="requested installation mode (validated against capabilities)",
+    )
+
+    doctor_parser = subparsers.add_parser("doctor", help="diagnose installation health")
+    doctor_parser.add_argument(
+        "--json", dest="doctor_json", action="store_true", help="machine-readable output"
+    )
+    doctor_parser.add_argument(
+        "--verbose", action="store_true", help="full technical detail"
+    )
+    doctor_parser.add_argument(
+        "--check-runtime",
+        action="store_true",
+        help="also verify the llama-server binary executes",
+    )
+    doctor_parser.add_argument(
+        "--check-inference",
+        action="store_true",
+        help="also query the running inference server health endpoint",
+    )
 
     start_parser = subparsers.add_parser(
         "start", help="start the local stack (model runtime if configured + UI/API)"
@@ -728,6 +766,9 @@ def main(argv: list[str] | None = None) -> int:
 
     status_parser = subparsers.add_parser("status", help="show stack process state")
     status_parser.add_argument("--run-dir", type=Path, default=default_run_dir)
+    status_parser.add_argument(
+        "--json", dest="status_json", action="store_true", help="machine-readable output"
+    )
 
     verify_parser = subparsers.add_parser(
         "verify", help="run the scripted fresh-environment MVP gate"
@@ -779,13 +820,23 @@ def main(argv: list[str] | None = None) -> int:
             source_url=args.source_url,
             registry=args.registry,
             assume_yes=args.yes,
+            plan_only=args.plan,
+            non_interactive=args.non_interactive,
+            mode=args.mode,
+        )
+    if args.command == "doctor":
+        return cmd_doctor(
+            json_output=args.doctor_json,
+            verbose=args.verbose,
+            check_runtime=args.check_runtime,
+            check_inference=args.check_inference,
         )
     if args.command == "start":
         return cmd_start(args.config, args.run_dir, args.port, args.stub, args.no_browser)
     if args.command == "stop":
         return cmd_stop(args.run_dir)
     if args.command == "status":
-        return cmd_status(args.run_dir)
+        return cmd_status(args.run_dir, json_output=args.status_json)
     if args.command == "verify":
         return cmd_verify(args.live)
     if args.command == "probe":

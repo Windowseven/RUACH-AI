@@ -14,11 +14,22 @@ from pathlib import Path
 from ruach_setup.download import DownloadError, download, sha256_of_file
 from ruach_setup.preflight import check_storage
 from ruach_setup.registry import load_models
-from ruach_setup.state import SetupState, save_state
+from ruach_setup.state import STAGES, SetupState, save_state
+
+_STAGE_INDEX = {name: index for index, name in enumerate(STAGES)}
 
 
 class InstallError(Exception):
     """Installation cannot proceed."""
+
+
+def _mark_forward(state: SetupState, stage: str, **fields: str | None) -> None:
+    """Advance the pipeline without ever moving backwards on resume."""
+    if _STAGE_INDEX.get(state.stage, -1) < _STAGE_INDEX[stage]:
+        state.mark(stage, **fields)
+        return
+    for key, value in fields.items():
+        setattr(state, key, value)
 
 
 @dataclass(frozen=True)
@@ -118,8 +129,10 @@ def install_model(
         )
         _record_sha256(active_registry, model_id, result.sha256)
 
-    state.mark("environment_ready")
-    state.mark("model_installed", model_id=model_id, model_sha256=result.sha256)
+    _mark_forward(state, "environment_ready")
+    _mark_forward(
+        state, "model_installed", model_id=model_id, model_sha256=result.sha256
+    )
     save_state(state, state_path)
     return ModelInstallResult(dest, result.sha256, result.resumed, False)
 

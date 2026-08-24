@@ -13,7 +13,9 @@ device.
 ./ruach start         # http://127.0.0.1:8018 opens in your browser
 ```
 
-Other commands: `./ruach stop`, `./ruach status`, `./ruach doctor`,
+Other commands: `./ruach stop`, `./ruach status`, `./ruach doctor`
+(`--verbose`, `--json`, `--check-runtime`, `--check-inference`),
+`./ruach setup --plan` (preview the installation plan without executing),
 `./ruach verify` (full local MVP gate), `./ruach probe` (device
 benchmark), `./ruach version`.
 
@@ -43,6 +45,9 @@ benchmark), `./ruach version`.
 | docs/12 | Roadmap + evidence-status discipline (what is verified where) |
 | docs/13 | Target-device readiness gate (measurements before promises) |
 | docs/14 | Threat model (assets, controls, accepted residuals) |
+| docs/15 | RUACH Doctor: capability discovery → profile selection → plan → verify |
+| docs/16 | Doctor & guided installation: modes, planner rules, dependency profiles |
+| docs/17 | Guided CLI UX: progressive disclosure, failure menus, resume, safety |
 
 ## Development
 

@@ -4,6 +4,60 @@ All notable changes. Format: rough Keep-a-Changelog spirit; statuses in
 entries follow the roadmap evidence discipline (IMPLEMENTED / MAC
 VERIFIED / TERMUX VERIFIED / UNKNOWN).
 
+## [0.4.0] — 2026-08-24
+
+### Added
+- **RUACH Doctor engine (docs/15):** full read-only lifecycle — SCAN →
+  NORMALIZE → ANALYZE → SELECT PROFILE → PLAN → VERIFY → REPORT.
+  Probes for platform/Android/Termux, memory (incl. swap configured vs
+  usable), storage per filesystem, Python runtime + wheel platform +
+  venv capability, toolchain (clang/gcc/make/cmake/ninja/git/rustc/
+  cargo), network (offline-tolerant), native inference capability
+  levels, model artifact, and Python dependency classification
+  (AVAILABLE_WHEEL … SOURCE_BUILD_BLOCKED).
+- **Runtime profiles & decision engine:** HYBRID-NATIVE /
+  HYBRID-PYTHON / NATIVE / PYTHON / MINIMAL / UNSUPPORTED with
+  explainable reasons, inspectable scores, hard-constraint overrides,
+  and confidence grading. A single dependency failure never classifies
+  a device unsupported (docs/15 §44); UNSUPPORTED only when every path
+  fails.
+- **Installation planner (docs/16):** deterministic mode rules,
+  per-mode step lists (hybrid = the docs' seven steps), dependency
+  profiles, ESTIMATE-marked storage figures, and `--mode` validation
+  that lists available alternatives when a request exceeds device
+  capabilities.
+- **Synthetic device fixtures** covering Android ARMv7 low-memory
+  (docs/15 §37 reference case), ARM64 capable/constrained, Linux
+  ARM64/x86_64, macOS dev host, no-toolchain, native-only, and
+  severely constrained classes; profile selection is asserted for all.
+- **Guided setup UX (docs/17):** interactive WELCOME → SCAN → CLASSIFY
+  → PLAN → CONFIRM → INSTALL → VERIFY → MODEL_SETUP → READY flow with
+  visible progress, smart-default prompts, failure menus (retry /
+  alternative / skip / technical details / exit), safe Ctrl+C handling
+  with resume hints, idempotent re-runs, and a non-interactive mode
+  with deterministic defaults and meaningful exit codes.
+- **Operation logging:** timestamped logs under ~/.ruach/logs/{doctor,
+  setup,...} plus append-only setup.log; secret-looking keys redacted;
+  logging failures never crash diagnostics.
+
+### Changed
+- `./ruach doctor` now renders the concise capability block by default
+  (Status/Profile/Inference/API/Model storage/Warnings) with
+  `--verbose` for the full matrix/findings/verification detail and
+  `--json` for machine-readable output; `--check-runtime` executes the
+  configured llama-server binary, `--check-inference` queries a running
+  server's health endpoint.
+- `./ruach setup --plan` previews the installation plan without
+  touching anything; interactive terminals get the guided flow while
+  scripts keep the deterministic non-interactive output.
+- `./ruach status` renders the human-readable status block (Runtime/
+  Backend/Inference/Model/API/Storage/Overall) with `--json` retained
+  for automation.
+- Doctor's environment verification is strictly read-only (writability
+  checked via nearest existing directory; nothing created during scan).
+- Installer state advancement is forward-only, fixing a resume-order
+  crash when the runtime stage was recorded before the model stage.
+
 ## [0.3.0] — 2026-08-23
 
 ### Added

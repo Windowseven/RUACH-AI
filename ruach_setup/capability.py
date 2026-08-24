@@ -8,10 +8,11 @@ All numeric thresholds are PROVISIONAL calibration values loaded from
 data/tiers.toml and must be replaced with benchmark-derived data (doc 10 §6).
 """
 
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+import tomllib
 
 from ruach_setup.device import RawEnvironment, normalize_architecture
 

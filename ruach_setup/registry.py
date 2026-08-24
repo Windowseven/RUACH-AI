@@ -4,9 +4,10 @@ Registries are the single source of runtime/model compatibility metadata.
 Nothing outside this module parses the TOML files.
 """
 
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
+import tomllib
 
 DATA_DIR = Path(__file__).parent / "data"
 
