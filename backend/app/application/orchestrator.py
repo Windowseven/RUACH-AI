@@ -30,8 +30,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.application import response_texts
 from app.application.context import USER_SENTINEL
 from app.application.inference import InferencePort
+from app.application.output_normalizer import normalize
 from app.application.tools.engine import SYSTEM_ERROR_TEXT, ToolEngine
 from app.application.tools.schemas import ToolRequest
 
@@ -50,28 +52,72 @@ def _looks_like_broken_proposal(text: str) -> bool:
     """Truncated request blocks OR degenerate echo loops (P4: the 0.6B
     model occasionally locks into template-header repetition). Safe:
     none of these execute; a resample goes through the same parser."""
-    if REQUEST_TAG_PATTERN.search(text) is None and REQUEST_OPEN_TAG.search(text):
+    if not text.strip():
+        # Everything normalized away (e.g. pure control-token output).
+        return True
+    if REQUEST_OPEN_TAG.search(text) and parse_tool_request(text) is None:
+        # Opened a request block but no balanced JSON payload followed
+        # (truncated close tag AND unparsable body).
         return True
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     header_lines = sum(1 for line in lines if line.startswith("###"))
     if header_lines >= 4:
         return True
-    if len(lines) >= 4 and len(set(lines)) <= 2:
-        return True
-    return parse_tool_request(text) is None and has_request_block(text)
+    return len(lines) >= 4 and len(set(lines)) <= 2
 
 
 def parse_tool_request(text: str) -> dict[str, Any] | None:
+    """Extract a proposal payload from model output (P17 §8/§10).
+
+    Well-formed blocks are matched by the tag pair. Small models
+    frequently omit the CLOSING tag while emitting clean JSON (observed
+    consistently on Qwen3-0.6B with finish_reason=stop); the unclosed
+    form is accepted ONLY when a balanced JSON object follows the open
+    tag - anything else fails closed to the protocol-error path.
+    """
     match = REQUEST_PATTERN.search(text)
-    if match is None:
-        return None
+    if match is not None:
+        return _payload(match.group(1))
+    open_match = REQUEST_OPEN_TAG.search(text)
+    if open_match is not None:
+        return _unclosed_payload(text[open_match.end():])
+    return None
+
+
+def _payload(raw_json: str) -> dict[str, Any] | None:
     try:
-        payload = json.loads(match.group(1))
+        payload = json.loads(raw_json)
     except json.JSONDecodeError:
         return None
-    if not isinstance(payload, dict):
+    return payload if isinstance(payload, dict) else None
+
+
+def _unclosed_payload(fragment: str) -> dict[str, Any] | None:
+    start = fragment.find("{")
+    if start < 0:
         return None
-    return payload
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(fragment)):
+        char = fragment[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return _payload(fragment[start:index + 1])
+    return None
 
 
 @dataclass
@@ -91,6 +137,7 @@ class TurnResult:
     tool_capability: str = ""
     tool_arguments: dict[str, Any] = field(default_factory=dict)
     tool_result_preview: str = ""  # bounded result text for context/history
+    error_class: str = ""  # "" | response_texts.MODEL_PROTOCOL_ERROR_EVENT
 
 
 def _proposal_from_payload(payload: dict[str, Any]) -> ToolRequest | None:
@@ -123,10 +170,8 @@ def _preview(output: Any, limit: int = 400) -> str:
 
 def _clean(text: str) -> str:
     cleaned = text.replace(USER_SENTINEL, "").strip()
-    return cleaned or "(empty response)"
+    return cleaned or response_texts.RESPONSE_TEXTS["empty_response"]
 
-
-MALFORMED_REPLY = "I formed a malformed tool request, so I took no action."
 
 # The 0.6B model occasionally locks into degenerate loops (template echo,
 # reasoning spill + endless code fences). Bounded resampling keeps this a
@@ -141,24 +186,40 @@ def run_turn(
     prompt: str,
     conversation_id: str = "",
 ) -> TurnResult:
-    first = inference.complete(prompt)
+    # Defense-in-depth: every sample is normalized at the orchestrator too,
+    # so no code path - even with a non-normalizing InferencePort double -
+    # can parse or surface raw control tokens (P17 §10).
+    first = normalize(inference.complete(prompt)).text
     for _ in range(MAX_SAMPLES - 1):
         if not _looks_like_broken_proposal(first):
             break
-        first = inference.complete(prompt)
+        first = normalize(inference.complete(prompt)).text
     if _looks_like_broken_proposal(first):
-        # Still degenerate after bounded resamples: honest no-action reply
-        # instead of echoing template junk at the user.
-        return TurnResult(kind="reply", reply=MALFORMED_REPLY)
+        # Still degenerate after bounded resamples: graceful no-action
+        # reply classified as a MODEL protocol error - the user did
+        # nothing wrong (P17 §8).
+        return TurnResult(
+            kind="reply",
+            reply=response_texts.model_protocol_error_text(),
+            error_class=response_texts.MODEL_PROTOCOL_ERROR_EVENT,
+        )
     payload = parse_tool_request(first)
     if payload is None:
         if has_request_block(first):
-            return TurnResult(kind="reply", reply=MALFORMED_REPLY)
+            return TurnResult(
+                kind="reply",
+                reply=response_texts.model_protocol_error_text(),
+                error_class=response_texts.MODEL_PROTOCOL_ERROR_EVENT,
+            )
         return TurnResult(kind="reply", reply=_clean(first))
 
     request = _proposal_from_payload(payload)
     if request is None:
-        return TurnResult(kind="reply", reply=MALFORMED_REPLY)
+        return TurnResult(
+            kind="reply",
+            reply=response_texts.model_protocol_error_text(),
+            error_class=response_texts.MODEL_PROTOCOL_ERROR_EVENT,
+        )
 
     outcome = engine.submit(request, conversation_id=conversation_id or None)
     common: dict[str, Any] = {
@@ -167,23 +228,25 @@ def run_turn(
         "tool_result_preview": _preview(outcome.output),
     }
     if outcome.state == "COMPLETED":
-        final = inference.complete(
-            _continuation_prompt(request.capability, json.dumps(outcome.output))
-        )
+        final = normalize(
+            inference.complete(
+                _continuation_prompt(request.capability, json.dumps(outcome.output))
+            )
+        ).text
         return TurnResult(
             kind="reply", reply=_clean(final), tool_state="COMPLETED", **common
         )
     if outcome.state == "DENIED":
         return TurnResult(
             kind="reply",
-            reply=f"I did not perform this action. Reason: {outcome.reason}",
+            reply=response_texts.policy_denied_text(str(outcome.reason)),
             tool_state="DENIED",
             **common,
         )
     if outcome.state == "FAILED":
         return TurnResult(
             kind="reply",
-            reply=f"The action failed while executing. Reason: {outcome.reason}",
+            reply=response_texts.tool_failed_text(str(outcome.reason)),
             tool_state="FAILED",
             **common,
         )
@@ -228,9 +291,11 @@ def resolve_decision(
         outcome = engine.reject(approval_id)
 
     if outcome.state == "COMPLETED":
-        final = inference.complete(
-            _continuation_prompt(capability, json.dumps(outcome.output))
-        )
+        final = normalize(
+            inference.complete(
+                _continuation_prompt(capability, json.dumps(outcome.output))
+            )
+        ).text
         return TurnResult(
             kind="reply",
             reply=_clean(final),
@@ -255,6 +320,6 @@ def resolve_decision(
         )
     return TurnResult(
         kind="reply",
-        reply=f"The action could not be completed. Reason: {outcome.reason}",
+        reply=response_texts.tool_failed_text(str(outcome.reason)),
         tool_state=outcome.state,
     )

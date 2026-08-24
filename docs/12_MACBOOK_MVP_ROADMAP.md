@@ -526,3 +526,50 @@ scoped), mypy clean on new modules.
 
 Statuses: guided UX IMPLEMENTED + MAC VERIFIED (real PTY run vs real
 ~/.ruach state); TERMUX VERIFIED pending target validation.
+
+### P17 — Conversation intelligence, identity & output normalization (2026-08-24)
+
+Root causes found by live diagnosis: (1) accidental tool selection came
+from a thin system prompt (one prose example, weak intent rules); (2)
+`</s>` leakage is a GGUF defect — this model ships `</s>` as a NON-control
+token (llama-server logs "control-looking token 128247 was not
+control-type"), so nothing stopped on it; (3) raw `/completion` bypasses
+the chat template, so Qwen3 never emitted its real EOS, rambled to the
+token cap, and leaked chain-of-thought.
+
+Fixes, all at the correct boundary (no keyword hacks anywhere):
+- `app/application/identity.py`: centralized, versioned (v2) RUACH identity
+  injected by ContextBuilder into EVERY request; truthfulness contract
+  pinned by tests (local-first, no invented capabilities, approval).
+- `app/application/tools/catalog.py`: per-capability purpose / when-NOT /
+  argument semantics / failure behavior; rendered into the prompt;
+  completeness pinned against CAPABILITY_RISK.
+- `app/application/context.py`: identity + catalog + semantic tool-use
+  rules + contrastive few-shot examples (greeting/casual/identity/
+  informational → prose; read/list → block).
+- `app/application/output_normalizer.py`: control-token stripping,
+  <think> removal, template-header-line stripping, degeneracy detection;
+  adapter ALSO sends structured stop sequences + repeat_penalty=1.15 and
+  now uses `/v1/chat/completions` (chat template restores real EOS and
+  server-side reasoning separation) with enable_thinking=false.
+- `app/application/response_texts.py`: centralized user-facing texts +
+  MODEL_PROTOCOL_ERROR classification; TurnResult.error_class carries the
+  internal taxonomy; malformed output no longer blames the user.
+- Orchestrator normalizes every sample (defense-in-depth), bounded
+  resampling retained, and protocol extraction accepts an unclosed
+  `<tool_request>` ONLY with balanced parsable JSON (observed live);
+  everything else still fails closed through policy.
+
+Tests: test_conversation_quality.py (31) — context assembly, conversation
+vs tools vs identity matrix, malformed/EOS/degenerate handling, taxonomy
+distinctness, boundary normalization. Suites: backend 154+1skip,
+bootstrap 109, ruff+mypy clean.
+
+Live-model matrix (11 prompts, real stack, report in
+~/.ruach/benchmarks/p17-conversation-matrix-*.json): 0 failures — no
+spurious tools, no control-token leakage, no malformed rows, latency
+2–23s. Residual limitations: delete requests sometimes get a clarifying
+question instead of an approval proposal (safe direction), and read
+summaries can be phrased awkwardly by the 0.6B model.
+
+Statuses: IMPLEMENTED + MAC VERIFIED (live). TERMUX VERIFIED pending.

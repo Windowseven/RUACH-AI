@@ -117,7 +117,7 @@ def test_malformed_proposal_gets_honest_no_action_reply(
     monkeypatch.setattr(StubInference, "complete", broken_proposal)
     response = client.post("/api/v1/chat", json={"message": "read x.txt"})
     data = response.json()["data"]
-    assert "took no action" in data["content"]
+    assert "couldn't safely interpret" in data["content"]
     assert data["tool"] is None
 
 

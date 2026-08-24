@@ -35,7 +35,9 @@ def _ok_opener(body: bytes, status: int = 200):
 
 
 def test_complete_returns_content():
-    opener = _ok_opener(b'{"content": "hello from qwen"}')
+    opener = _ok_opener(
+        b'{"choices": [{"message": {"content": "hello from qwen"}}]}'
+    )
     assert _adapter(opener).complete("hi") == "hello from qwen"
 
 
@@ -79,7 +81,10 @@ def test_malformed_output_maps_to_inference_failed():
 
 def test_missing_model_file_blocks_completion(tmp_path):
     missing = tmp_path / "missing.gguf"
-    adapter = _adapter(_ok_opener(b'{"content": "x"}'), model_path=str(missing))
+    adapter = _adapter(
+        _ok_opener(b'{"choices": [{"message": {"content": "x"}}]}'),
+        model_path=str(missing),
+    )
     with pytest.raises(ModelNotFound):
         adapter.complete("hi")
 

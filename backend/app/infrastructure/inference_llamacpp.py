@@ -12,13 +12,16 @@ from app.application.inference import (
     ModelLoadFailed,
     ModelNotFound,
 )
+from app.application.output_normalizer import STOP_SEQUENCES, normalize
 
 
 class LlamaCppAdapter:
     """InferencePort implementation backed by a local llama-server process.
 
     All llama.cpp specifics live here. The application layer only ever
-    sees InferencePort and the typed inference errors.
+    sees InferencePort and the typed inference errors. Output passes
+    through the central output normalizer: control tokens stop at this
+    boundary and never reach the application or the frontend.
     """
 
     def __init__(
@@ -30,6 +33,7 @@ class LlamaCppAdapter:
         max_tokens: int = 256,
         temperature: float = 0.2,
         opener: Any = None,
+        stop_sequences: list[str] | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model_name = model_name
@@ -38,20 +42,11 @@ class LlamaCppAdapter:
         self._temperature = temperature
         self._model_path = Path(model_path) if model_path else None
         self._opener = opener if opener is not None else urllib.request.urlopen
+        self._stop = list(stop_sequences) if stop_sequences is not None else list(STOP_SEQUENCES)
 
-    @staticmethod
-    def _strip_reasoning(text: str) -> str:
-        """Remove hidden reasoning blocks (docs/06 §18 forbids exposing them).
-
-        Qwen3-style models emit <think>...</think> before the answer; the
-        answer is the only part that may reach the conversation.
-        """
-        import re
-
-        stripped = re.sub(r"<think>[\s\S]*?</think>", "", text)
-        if "<think>" in stripped:  # unterminated block: reasoning never closed
-            stripped = re.sub(r"<think>[\s\S]*", "", stripped)
-        return stripped.strip()
+    def _strip_reasoning(self, text: str) -> str:
+        """Kept for compatibility; real logic lives in output_normalizer."""
+        return normalize(text).text
 
     def _ensure_model_file(self) -> None:
         if self._model_path is not None and not self._model_path.is_file():
@@ -82,13 +77,28 @@ class LlamaCppAdapter:
 
     def complete(self, prompt: str) -> str:
         self._ensure_model_file()
+        # Chat-completions endpoint ON PURPOSE (P17 §10/§11): it applies the
+        # model's own chat template, which restores correct EOS handling
+        # (this GGUF ships </s> as a non-control token) and keeps reasoning
+        # inside <think> where the server separates it from the answer.
+        # The whole rendered context travels as one user message because
+        # ContextBuilder owns assembly; the template must not re-split it.
         status, raw = self._request(
             "POST",
-            "/completion",
+            "/v1/chat/completions",
             {
-                "prompt": prompt,
-                "n_predict": self._max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": self._max_tokens,
                 "temperature": self._temperature,
+                # Single measured anti-ramble knob (P17 §11).
+                "repeat_penalty": 1.15,
+                # Structured stop information first (§10): the runtime
+                # halts generation at control tokens instead of emitting
+                # them; the normalizer catches whatever still slips out.
+                "stop": self._stop,
+                # RUACH answers directly; hidden chains stay out of the
+                # latency budget as well as out of the UI.
+                "chat_template_kwargs": {"enable_thinking": False},
             },
         )
         if status == 404:
@@ -98,10 +108,10 @@ class LlamaCppAdapter:
         if status != 200:
             raise InferenceFailed(f"llama.cpp returned HTTP {status}.")
         try:
-            result = json.loads(raw)["content"]
-        except (ValueError, KeyError) as error:
+            result = json.loads(raw)["choices"][0]["message"]["content"]
+        except (ValueError, KeyError, IndexError, TypeError) as error:
             raise InferenceFailed("llama.cpp returned malformed output.") from error
-        return self._strip_reasoning(str(result))
+        return normalize(str(result)).text
 
     def health(self) -> InferenceHealth:
         try:
