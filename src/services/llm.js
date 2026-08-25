@@ -1,6 +1,6 @@
 import { spawn, execSync } from "child_process";
 import { existsSync, readdirSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
 import { homedir, cpus, arch, platform } from "os";
 
 const RUACH_DIR = join(homedir(), ".ruach");
@@ -104,12 +104,18 @@ export class LLMService {
         ],
         {
           stdio: ["ignore", "pipe", "pipe"],
-          env: { ...process.env, OMP_NUM_THREADS: "1" },
+          env: {
+            ...process.env,
+            OMP_NUM_THREADS: "1",
+            LD_LIBRARY_PATH: join(dirname(this.serverPath)) + (process.env.LD_LIBRARY_PATH ? ":" + process.env.LD_LIBRARY_PATH : ""),
+          },
         }
       );
 
       this.startTime = Date.now();
       let started = false;
+
+      let stderrOutput = "";
 
       this.process.stdout.on("data", (data) => {
         const line = data.toString();
@@ -121,6 +127,7 @@ export class LLMService {
 
       this.process.stderr.on("data", (data) => {
         const line = data.toString();
+        stderrOutput += line;
         if (!started && line.includes("listening")) {
           started = true;
           resolve();
@@ -137,7 +144,7 @@ export class LLMService {
         this.process = null;
         this.startTime = null;
         if (!started) {
-          reject(new Error(`llama-server exited with code ${code}`));
+          reject(new Error(`llama-server exited with code ${code}: ${stderrOutput.slice(0, 500)}`));
         }
       });
 

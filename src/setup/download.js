@@ -145,6 +145,21 @@ export async function installRuntime() {
     }
     rmSync(tmpDir, { recursive: true, force: true });
 
+    // Make binary executable
+    if (platform() !== "win32" && existsSync(dest)) {
+      chmodSync(dest, 0o755);
+    }
+
+    // Also make all extracted files executable (shared libs, etc.)
+    if (platform() !== "win32") {
+      try {
+        const { readdirSync } = await import("fs");
+        for (const f of readdirSync(extractDir)) {
+          chmodSync(join(extractDir, f), 0o755);
+        }
+      } catch {}
+    }
+
     // Clean up tar
     const { unlinkSync } = await import("fs");
     unlinkSync(tarDest);
