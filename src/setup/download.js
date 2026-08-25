@@ -119,9 +119,9 @@ function testBinary(binPath) {
   }
 }
 
-// ── Build llama.cpp from source on device (Termux fallback) ──
+// ── Build llama.cpp from source on device ──────────────────
 async function buildFromSource(destDir, bin) {
-  console.log("\n  Pre-built binary incompatible — building from source...");
+  console.log("\n  Building llama.cpp from source...");
 
   // Check build tools
   const deps = isTermux() ? ["git", "cmake", "clang"] : ["git", "cmake", "g++"];
@@ -135,18 +135,17 @@ async function buildFromSource(destDir, bin) {
   }
 
   if (missing.length > 0) {
-    console.log(`  Installing build dependencies: ${missing.join(", ")}...`);
+    console.log(`  Installing: ${missing.join(", ")}...`);
     try {
       if (isTermux()) {
-        execSync(`pkg install -y ${missing.join(" ")}`, { stdio: "pipe", timeout: 120000 });
+        execSync(`pkg install -y ${missing.join(" ")}`, { stdio: "inherit", timeout: 180000 });
       } else {
-        execSync(`sudo apt-get install -y ${missing.join(" ")}`, { stdio: "pipe", timeout: 120000 });
+        execSync(`sudo apt-get install -y ${missing.join(" ")}`, { stdio: "inherit", timeout: 180000 });
       }
     } catch {
       throw new Error(
         `Failed to install build tools. Run manually:\n` +
-        `  ${isTermux() ? "pkg" : "sudo apt-get install"} ${missing.join(" ")}\n` +
-        `Then re-run: npm install`
+        `  ${isTermux() ? "pkg" : "sudo apt-get install"} ${missing.join(" ")}`
       );
     }
   }
@@ -248,10 +247,28 @@ export async function installRuntime() {
       console.log(`  ✓ Runtime already installed (${archLabel})`);
       return dest;
     }
-    console.log(`  ⚠ Existing binary incompatible — will replace after download`);
+    console.log(`  ⚠ Existing binary incompatible`);
   }
 
-  // Try downloading pre-built
+  // On Termux: always build from source (cross-compiled binaries don't work)
+  if (isTermux()) {
+    console.log(`\n  Building runtime from source for Termux...`);
+    try {
+      return await buildFromSource(destDir, bin);
+    } catch (err) {
+      console.log(`  ✗ Build failed: ${err.message}`);
+      throw new Error(
+        `Could not build llama.cpp on Termux.\n` +
+        `Try manually:\n` +
+        `  pkg install git cmake clang\n` +
+        `  cd /tmp && git clone --depth 1 --branch b10622 https://github.com/ggml-org/llama.cpp.git\n` +
+        `  cd llama.cpp && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)\n` +
+        `  cp build/bin/llama-server ~/.ruach/runtime/${archLabel}/`
+      );
+    }
+  }
+
+  // Non-Termux: try pre-built binary
   const version = "0.5.0";
   const url = `${RELEASES_BASE}/v${version}/llama-server-${archLabel}.tar.gz`;
 
@@ -292,47 +309,12 @@ export async function installRuntime() {
     }
   }
 
-  // Verify the downloaded binary works
   if (existsSync(dest) && testBinary(dest)) {
     console.log(`  ✓ Runtime verified (${archLabel})`);
     return dest;
   }
 
-  // Pre-built binary doesn't work (wrong linker, wrong arch, etc.)
-  if (existsSync(dest)) {
-    console.log(`  ⚠ Pre-built binary incompatible — trying to fix...`);
-  }
-
-  // On Termux, try installing glibc first (provides missing dynamic linker)
-  if (isTermux()) {
-    try {
-      console.log("  Installing glibc (provides missing dynamic linker)...");
-      const result = execSync("pkg install -y glibc-repo glibc 2>&1 || true", { encoding: "utf8", timeout: 60000 });
-      console.log("  glibc install output:", result.trim().split("\n").pop() || "done");
-      if (existsSync(dest) && testBinary(dest)) {
-        console.log(`  ✓ Runtime works after glibc install`);
-        return dest;
-      }
-      console.log("  ⚠ glibc installed but binary still doesn't work — building from source");
-    } catch (e) {
-      console.log(`  ⚠ glibc install failed: ${e.message}`);
-    }
-  }
-
-  // Build from source (Termux fallback)
-  if (isTermux() || platform() === "linux") {
-    try {
-      return await buildFromSource(destDir, bin);
-    } catch (err) {
-      console.log(`  ✗ Build from source failed: ${err.message}`);
-    }
-  }
-
-  throw new Error(
-    `Runtime binary doesn't work on this system.\n` +
-    `On Termux, run: pkg install glibc-repo && pkg install glibc\n` +
-    `Or build manually: cd /tmp && git clone --depth 1 --branch b10622 https://github.com/ggml-org/llama.cpp.git && cd llama.cpp && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2`
-  );
+  throw new Error(`Runtime doesn't work. Run \`ruach setup\` to rebuild.`);
 }
 
 // ── Install model ──────────────────────────────────────────
