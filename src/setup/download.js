@@ -230,7 +230,17 @@ export async function fullSetup() {
     console.log("\n  ⚠ Frontend not found — rebuild on dev machine: cd frontend && npm run build");
   }
 
-  // 4. Save config
+  // 4. Link ruach command globally
+  try {
+    const { execSync } = await import("child_process");
+    const projectRoot = join(import.meta.dirname, "..", "..");
+    execSync("npm link", { cwd: projectRoot, stdio: "pipe" });
+    console.log("  ✓ `ruach` command linked");
+  } catch {
+    console.log("  ⚠ Could not link `ruach` — use `npx ruach start` instead");
+  }
+
+  // 5. Save config
   const { writeFileSync } = await import("fs");
   const config = {
     version: "0.5.0",
@@ -240,7 +250,7 @@ export async function fullSetup() {
   };
   writeFileSync(join(RUACH_DIR, "config.json"), JSON.stringify(config, null, 2));
 
-  // 5. Summary
+  // 6. Summary
   console.log("\n  ── Setup Complete ──────────────────────");
   if (runtimePath && modelPath) {
     console.log("  ✓ Everything installed. Run `ruach start` to begin.\n");
