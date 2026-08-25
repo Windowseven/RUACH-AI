@@ -2,16 +2,27 @@ import { Router } from "express";
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { homedir, arch, platform } from "os";
+import { execSync } from "child_process";
 
 export const router = Router();
 
 const RUACH_DIR = join(homedir(), ".ruach");
 
+function detectArch() {
+  try {
+    const uname = execSync("uname -m", { encoding: "utf8" }).trim().toLowerCase();
+    if (uname === "armv7l" || uname === "armv6l") return "arm";
+    if (uname === "aarch64" || uname === "arm64") return "arm64";
+    if (uname === "x86_64" || uname === "amd64") return "x64";
+  } catch {}
+  return arch();
+}
+
 function getArchLabel() {
-  const a = arch();
+  const a = detectArch();
   const p = platform();
   if (p === "android" || p === "linux") {
-    if (a === "arm") return "aarch64-linux";
+    if (a === "arm") return "arm-linux";
     if (a === "arm64") return "aarch64-linux";
     if (a === "x64") return "x86_64-linux";
   }

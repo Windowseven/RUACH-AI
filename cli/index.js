@@ -3,6 +3,7 @@
 import { existsSync, readdirSync, statSync } from "fs";
 import { join } from "path";
 import { homedir, arch, platform, cpus, totalmem, freemem } from "os";
+import { execSync } from "child_process";
 import { fullSetup, installRuntime, installModel } from "../src/setup/download.js";
 
 const args = process.argv.slice(2);
@@ -104,9 +105,17 @@ function help() {
 
 // ── Helpers ────────────────────────────────────────────────
 function detectDevice() {
+  let realArch = arch();
+  try {
+    const uname = execSync("uname -m", { encoding: "utf8" }).trim().toLowerCase();
+    if (uname === "armv7l" || uname === "armv6l") realArch = "arm";
+    else if (uname === "aarch64" || uname === "arm64") realArch = "arm64";
+    else if (uname === "x86_64" || uname === "amd64") realArch = "x64";
+  } catch {}
   return {
     platform: platform(),
-    arch: arch(),
+    arch: realArch,
+    nodeArch: arch(),
     cpus: cpus().length,
     ram_mb: Math.round(totalmem() / 1024 / 1024),
     free_ram_mb: Math.round(freemem() / 1024 / 1024),

@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, createWriteStream, chmodSync } from "fs";
+import { existsSync, mkdirSync, createWriteStream, chmodSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir, arch, platform } from "os";
 import { pipeline } from "stream/promises";
+import { execSync } from "child_process";
 
 const RUACH_DIR = join(homedir(), ".ruach");
 const RUNTIME_DIR = join(RUACH_DIR, "runtime");
@@ -10,12 +11,26 @@ const MODELS_DIR = join(RUACH_DIR, "models");
 // GitHub releases base URL — update this to your repo
 const RELEASES_BASE = "https://github.com/Windowseven/RUACH-AI/releases/download";
 
+// ── Detect actual architecture (Node.js can lie on Termux) ──
+function detectArch() {
+  // First try uname -m (most reliable on Linux/Android)
+  try {
+    const uname = execSync("uname -m", { encoding: "utf8" }).trim().toLowerCase();
+    if (uname === "armv7l" || uname === "armv6l") return "arm";
+    if (uname === "aarch64" || uname === "arm64") return "arm64";
+    if (uname === "x86_64" || uname === "amd64") return "x64";
+  } catch {}
+
+  // Fallback to Node.js process.arch
+  return arch();
+}
+
 // ── Architecture mapping ───────────────────────────────────
 function getArchLabel() {
-  const a = arch();
+  const a = detectArch();
   const p = platform();
   if (p === "android" || p === "linux") {
-    if (a === "arm") return "aarch64-linux"; // ARM32 falls back to ARM64
+    if (a === "arm") return "arm-linux";
     if (a === "arm64") return "aarch64-linux";
     if (a === "x64") return "x86_64-linux";
   }
@@ -191,13 +206,14 @@ export async function fullSetup() {
   console.log("\n  Building frontend...");
   try {
     const { execSync } = await import("child_process");
-    execSync("npm run build", {
-      cwd: join(import.meta.dirname, "..", "frontend"),
-      stdio: "pipe",
-    });
+    const frontendDir = join(import.meta.dirname, "..", "frontend");
+    // Install frontend dependencies first
+    execSync("npm install", { cwd: frontendDir, stdio: "pipe" });
+    // Build with npx to ensure local binaries are found
+    execSync("npx tsc -b && npx vite build", { cwd: frontendDir, stdio: "pipe" });
     console.log("  ✓ Frontend built");
   } catch (err) {
-    console.log("  ⚠ Frontend build skipped (run manually: cd frontend && npm run build)");
+    console.log("  ⚠ Frontend build skipped (run manually: cd frontend && npm install && npm run build)");
   }
 
   // 4. Save config
