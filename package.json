@@ -1,0 +1,35 @@
+{
+  "name": "ruach",
+  "version": "0.5.0",
+  "description": "Local-first AI workspace — runs on Android Termux",
+  "type": "module",
+  "bin": {
+    "ruach": "./bin/ruach"
+  },
+  "scripts": {
+    "postinstall": "node cli/index.js setup",
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "setup": "node cli/index.js setup",
+    "doctor": "node cli/index.js doctor",
+    "build:frontend": "cd frontend && npm run build",
+    "build": "npm run build:frontend"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "ws": "^8.18.0",
+    "node-pty": "^1.0.0"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "src/",
+    "cli/",
+    "bin/",
+    "frontend/dist/"
+  ]
+}

@@ -1,32 +1,26 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-build/
+# Dependencies
+node_modules/
 
-# Virtual environments
-.venv/
+# Build output
+frontend/dist/
+.build/releases/
 
-# Environment variables
+# Runtime (downloaded locally)
+~/.ruach/
+
+# Environment
 .env
-
-# Tool caches
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
+.env.local
 
 # OS / editor
 .DS_Store
+*.swp
+*.swo
+*~
 
-# Model artifacts (staged locally for Termux transfer, never committed)
-staging/models/**/*.gguf
+# Logs
+*.log
+npm-debug.log*
 
-# Local Android platform-tools + transfer bundles
-/tools/
-staging/*.tar.gz
-
-# Local build workspace
-/.build/
+# TypeScript
+*.tsbuildinfo

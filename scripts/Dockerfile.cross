@@ -1,0 +1,88 @@
+# Cross-compilation Dockerfile for llama.cpp
+# Builds llama-server for multiple Linux architectures
+#
+# Usage:
+#   docker build -t llama-builder .
+#   docker run --rm -v $(pwd)/output:/output llama-builder arm
+#   docker run --rm -v $(pwd)/output:/output llama-builder aarch64
+#   docker run --rm -v $(pwd)/output:/output llama-builder x86_64
+
+FROM ubuntu:22.04 AS base
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── ARM (32-bit, armv7l) ──────────────────────────────────
+FROM base AS cross-arm
+RUN apt-get update && apt-get install -y \
+    gcc-arm-linux-gnueabihf \
+    g++-arm-linux-gnueabihf \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── AArch64 (64-bit ARM) ──────────────────────────────────
+FROM base AS cross-aarch64
+RUN apt-get update && apt-get install -y \
+    gcc-aarch64-linux-gnu \
+    g++-aarch64-linux-gnu \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── x86_64 (native) ──────────────────────────────────────
+FROM base AS cross-x86_64
+# Native compilation, no cross tools needed
+
+# ── Builder ────────────────────────────────────────────────
+FROM base AS builder
+
+ARG TARGET_ARCH=x86_64
+ARG LLAMA_CPP_VERSION=b4550
+
+# Clone llama.cpp
+RUN git clone --depth 1 --branch ${LLAMA_CPP_VERSION} \
+    https://github.com/ggml-org/llama.cpp.git /build/llama.cpp
+
+WORKDIR /build/llama.cpp
+
+# Build based on target architecture
+RUN mkdir -p /output && \
+    case "${TARGET_ARCH}" in \
+      arm) \
+        cmake -B build \
+          -DCMAKE_SYSTEM_NAME=Linux \
+          -DCMAKE_SYSTEM_PROCESSOR=armv7l \
+          -DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc \
+          -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++ \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DLLAMA_CURL=OFF \
+          -DGGML_NATIVE=OFF && \
+        cmake --build build --config Release -j$(nproc) && \
+        cp build/bin/llama-server /output/llama-server-arm-linux && \
+        ;; \
+      aarch64) \
+        cmake -B build \
+          -DCMAKE_SYSTEM_NAME=Linux \
+          -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+          -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+          -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DLLAMA_CURL=OFF \
+          -DGGML_NATIVE=OFF && \
+        cmake --build build --config Release -j$(nproc) && \
+        cp build/bin/llama-server /output/llama-server-aarch64-linux && \
+        ;; \
+      x86_64) \
+        cmake -B build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DLLAMA_CURL=OFF \
+          -DGGML_NATIVE=ON && \
+        cmake --build build --config Release -j$(nproc) && \
+        cp build/bin/llama-server /output/llama-server-x86_64-linux && \
+        ;; \
+      *) \
+        echo "Unknown arch: ${TARGET_ARCH}" && exit 1 ;; \
+    esac
+
+CMD ["echo", "Use: docker run --rm -v $(pwd)/output:/output llama-builder <arch>"]

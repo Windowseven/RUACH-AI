@@ -1,0 +1,143 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.5.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [arm, aarch64, x86_64]
+        include:
+          - arch: arm
+            label: arm-linux
+            docker_arch: arm
+          - arch: aarch64
+            label: aarch64-linux
+            docker_arch: aarch64
+          - arch: x86_64
+            label: x86_64-linux
+            docker_arch: x86_64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=v${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg LLAMA_CPP_VERSION=b4550 \
+            -t llama-builder \
+            -f scripts/Dockerfile.cross \
+            scripts/
+
+      - name: Build llama-server (${{ matrix.arch }})
+        run: |
+          docker run --rm \
+            --build-arg TARGET_ARCH=${{ matrix.arch }} \
+            -v $(pwd)/output:/output \
+            llama-builder \
+            bash -c "cd /build/llama.cpp && \
+              case '${{ matrix.arch }}' in \
+                arm) \
+                  cmake -B build \
+                    -DCMAKE_SYSTEM_NAME=Linux \
+                    -DCMAKE_SYSTEM_PROCESSOR=armv7l \
+                    -DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc \
+                    -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++ \
+                    -DCMAKE_BUILD_TYPE=Release \
+                    -DLLAMA_CURL=OFF \
+                    -DGGML_NATIVE=OFF && \
+                  cmake --build build --config Release -j\$(nproc) && \
+                  cp build/bin/llama-server /output/llama-server-arm-linux && \
+                  ;; \
+                aarch64) \
+                  cmake -B build \
+                    -DCMAKE_SYSTEM_NAME=Linux \
+                    -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+                    -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+                    -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+                    -DCMAKE_BUILD_TYPE=Release \
+                    -DLLAMA_CURL=OFF \
+                    -DGGML_NATIVE=OFF && \
+                  cmake --build build --config Release -j\$(nproc) && \
+                  cp build/bin/llama-server /output/llama-server-aarch64-linux && \
+                  ;; \
+                x86_64) \
+                  cmake -B build \
+                    -DCMAKE_BUILD_TYPE=Release \
+                    -DLLAMA_CURL=OFF \
+                    -DGGML_NATIVE=ON && \
+                  cmake --build build --config Release -j\$(nproc) && \
+                  cp build/bin/llama-server /output/llama-server-x86_64-linux && \
+                  ;; \
+              esac"
+
+      - name: Package
+        run: |
+          cd output
+          tar -czf llama-server-${{ matrix.label }}.tar.gz llama-server-${{ matrix.label }}
+          ls -lh llama-server-${{ matrix.label }}.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-server-${{ matrix.label }}
+          path: output/llama-server-${{ matrix.label }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.version || github.ref_name }}
+          name: "RUACH ${{ needs.build.outputs.version || github.ref_name }}"
+          body: |
+            ## RUACH AI ${{ needs.build.outputs.version || github.ref_name }}
+            
+            ### Pre-built llama.cpp binaries
+            Download the binary for your architecture:
+            - `llama-server-arm-linux.tar.gz` — ARM 32-bit (Termux on older devices)
+            - `llama-server-aarch64-linux.tar.gz` — ARM 64-bit (modern phones)
+            - `llama-server-x86_64-linux.tar.gz` — x86_64 (laptops, servers)
+            
+            ### Install
+            ```bash
+            git clone https://github.com/furahamogela/RUACH-AI.git
+            cd RUACH-AI
+            npm install
+            ruach start
+            ```
+          files: |
+            artifacts/**/*.tar.gz
+          draft: false
+          prerelease: false

@@ -1,0 +1,222 @@
+import { existsSync, mkdirSync, createWriteStream, chmodSync } from "fs";
+import { join } from "path";
+import { homedir, arch, platform } from "os";
+import { pipeline } from "stream/promises";
+
+const RUACH_DIR = join(homedir(), ".ruach");
+const RUNTIME_DIR = join(RUACH_DIR, "runtime");
+const MODELS_DIR = join(RUACH_DIR, "models");
+
+// GitHub releases base URL — update this to your repo
+const RELEASES_BASE = "https://github.com/Windowseven/RUACH-AI/releases/download";
+
+// ── Architecture mapping ───────────────────────────────────
+function getArchLabel() {
+  const a = arch();
+  const p = platform();
+  if (p === "android" || p === "linux") {
+    if (a === "arm") return "aarch64-linux"; // ARM32 falls back to ARM64
+    if (a === "arm64") return "aarch64-linux";
+    if (a === "x64") return "x86_64-linux";
+  }
+  if (p === "darwin") {
+    if (a === "arm64") return "aarch64-macos";
+    if (a === "x64") return "x86_64-macos";
+  }
+  if (p === "win32") return "x86_64-windows";
+  return `${a}-${p}`;
+}
+
+function getServerBinaryName() {
+  return platform() === "win32" ? "llama-server.exe" : "llama-server";
+}
+
+// ── Download helpers ───────────────────────────────────────
+async function downloadFile(url, dest, label) {
+  if (existsSync(dest)) {
+    console.log(`  ✓ ${label} already exists`);
+    return true;
+  }
+
+  console.log(`  ↓ Downloading ${label}...`);
+  console.log(`    ${url}`);
+
+  try {
+    const resp = await fetch(url, { redirect: "follow" });
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+    }
+
+    mkdirSync(join(dest, ".."), { recursive: true });
+    const fileStream = createWriteStream(dest);
+    await pipeline(resp.body, fileStream);
+
+    // Make executable on Unix
+    if (platform() !== "win32") {
+      chmodSync(dest, 0o755);
+    }
+
+    console.log(`  ✓ ${label} installed`);
+    return true;
+  } catch (err) {
+    console.log(`  ✗ ${label} failed: ${err.message}`);
+    // Clean up partial download
+    try {
+      const { unlinkSync } = await import("fs");
+      if (existsSync(dest)) unlinkSync(dest);
+    } catch {}
+    return false;
+  }
+}
+
+// ── Install runtime ────────────────────────────────────────
+export async function installRuntime() {
+  const archLabel = getArchLabel();
+  const bin = getServerBinaryName();
+  const dest = join(RUNTIME_DIR, archLabel, bin);
+
+  if (existsSync(dest)) {
+    console.log(`  ✓ Runtime already installed (${archLabel})`);
+    return dest;
+  }
+
+  // Try GitHub release
+  const version = "0.5.0";
+  const url = `${RELEASES_BASE}/v${version}/llama-server-${archLabel}.tar.gz`;
+
+  console.log(`\n  Installing runtime for ${archLabel}...`);
+
+  // Download tar.gz
+  const tarDest = join(RUNTIME_DIR, `${archLabel}.tar.gz`);
+  const ok = await downloadFile(url, tarDest, `runtime (${archLabel})`);
+
+  if (!ok) {
+    // Fallback: try direct binary URL
+    const binUrl = `${RELEASES_BASE}/v${version}/${bin}-${archLabel}`;
+    const binOk = await downloadFile(binUrl, dest, `runtime binary (${archLabel})`);
+    if (!binOk) {
+      throw new Error(
+        `Could not download runtime for ${archLabel}.\n` +
+        `Manually place ${bin} in: ${join(RUNTIME_DIR, archLabel)}/`
+      );
+    }
+    return dest;
+  }
+
+  // Extract tar.gz
+  const { execSync } = await import("child_process");
+  const extractDir = join(RUNTIME_DIR, archLabel);
+  mkdirSync(extractDir, { recursive: true });
+  try {
+    execSync(`tar -xzf "${tarDest}" -C "${extractDir}" --strip-components=1`, {
+      stdio: "pipe",
+    });
+    // Clean up tar
+    const { unlinkSync } = await import("fs");
+    unlinkSync(tarDest);
+  } catch (err) {
+    throw new Error(`Failed to extract runtime: ${err.message}`);
+  }
+
+  if (!existsSync(dest)) {
+    throw new Error(`Runtime binary not found after extraction at ${dest}`);
+  }
+
+  return dest;
+}
+
+// ── Install model ──────────────────────────────────────────
+export async function installModel() {
+  // Check if any model exists
+  if (existsSync(MODELS_DIR)) {
+    try {
+      const { readdirSync } = await import("fs");
+      const entries = readdirSync(MODELS_DIR);
+      const gguf = entries.find((e) => e.endsWith(".gguf"));
+      if (gguf) {
+        console.log(`  ✓ Model already installed: ${gguf}`);
+        return join(MODELS_DIR, gguf);
+      }
+    } catch {}
+  }
+
+  mkdirSync(MODELS_DIR, { recursive: true });
+
+  // Download TinyLlama 1.1B Q4_0 (~637 MB) — small enough for ARM32
+  const modelName = "tinyllama-1.1b-q4_0.gguf";
+  const url = "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_0.gguf";
+  const dest = join(MODELS_DIR, modelName);
+
+  console.log(`\n  Installing default model (TinyLlama 1.1B Q4_0, ~637 MB)...`);
+  const ok = await downloadFile(url, dest, "default model");
+
+  if (!ok) {
+    throw new Error(
+      `Could not download model.\n` +
+      `Manually place a .gguf file in: ${MODELS_DIR}/`
+    );
+  }
+
+  return dest;
+}
+
+// ── Full setup ─────────────────────────────────────────────
+export async function fullSetup() {
+  console.log("\n  RUACH Setup\n");
+
+  // Create directories
+  mkdirSync(RUACH_DIR, { recursive: true });
+  mkdirSync(RUNTIME_DIR, { recursive: true });
+  mkdirSync(MODELS_DIR, { recursive: true });
+
+  // 1. Install runtime
+  let runtimePath;
+  try {
+    runtimePath = await installRuntime();
+  } catch (err) {
+    console.log(`  ✗ Runtime: ${err.message}`);
+    runtimePath = null;
+  }
+
+  // 2. Install model
+  let modelPath;
+  try {
+    modelPath = await installModel();
+  } catch (err) {
+    console.log(`  ✗ Model: ${err.message}`);
+    modelPath = null;
+  }
+
+  // 3. Build frontend
+  console.log("\n  Building frontend...");
+  try {
+    const { execSync } = await import("child_process");
+    execSync("npm run build", {
+      cwd: join(import.meta.dirname, "..", "frontend"),
+      stdio: "pipe",
+    });
+    console.log("  ✓ Frontend built");
+  } catch (err) {
+    console.log("  ⚠ Frontend build skipped (run manually: cd frontend && npm run build)");
+  }
+
+  // 4. Save config
+  const { writeFileSync } = await import("fs");
+  const config = {
+    version: "0.5.0",
+    runtime: runtimePath,
+    model: modelPath,
+    installed_at: new Date().toISOString(),
+  };
+  writeFileSync(join(RUACH_DIR, "config.json"), JSON.stringify(config, null, 2));
+
+  // 5. Summary
+  console.log("\n  ── Setup Complete ──────────────────────");
+  if (runtimePath && modelPath) {
+    console.log("  ✓ Everything installed. Run `ruach start` to begin.\n");
+  } else {
+    console.log("  ⚠ Partial install. Check errors above.\n");
+  }
+
+  return { runtime: runtimePath, model: modelPath };
+}
