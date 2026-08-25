@@ -3,17 +3,19 @@
 Model stage is fully implemented: preflight → resumable verified download →
 trust-on-first-use hash recording → state tracking.
 
-Runtime stage (llama.cpp build) is deliberately BLOCKED until the Termux
-spike provides target-device evidence (docs/11). It fails loudly instead
-of pretending.
+Runtime stage builds llama.cpp from source when the toolchain is present.
 """
 
+import os
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from ruach_setup.download import DownloadError, download, sha256_of_file
 from ruach_setup.preflight import check_storage
-from ruach_setup.registry import load_models
+from ruach_setup.registry import load_models, load_runtimes
 from ruach_setup.state import STAGES, SetupState, save_state
 
 _STAGE_INDEX = {name: index for index, name in enumerate(STAGES)}
@@ -40,11 +42,136 @@ class ModelInstallResult:
     already_present: bool
 
 
-def install_runtime() -> None:
-    raise InstallError(
-        "Runtime installation is BLOCKED: llama.cpp acquisition on "
-        "Android/Termux awaits spike validation (docs/11_TERMUX_SPIKE.md)."
-    )
+@dataclass(frozen=True)
+class RuntimeInstallResult:
+    path: Path
+    version_line: str
+
+
+def _check_toolchain() -> tuple[bool, str]:
+    """Verify cmake + a C compiler are available. Returns (ok, detail)."""
+    has_cmake = shutil.which("cmake") is not None
+    has_cc = shutil.which("clang") is not None or shutil.which("gcc") is not None
+    has_make = shutil.which("make") is not None or shutil.which("gmake") is not None
+    if not has_cmake:
+        return False, "cmake not found — install it first"
+    if not has_cc:
+        return False, "no C compiler found (need clang or gcc)"
+    if not has_make:
+        return False, "make not found — install it first"
+    return True, "toolchain OK"
+
+
+def install_runtime(
+    *,
+    home: Path | None = None,
+    source_url: str | None = None,
+    jobs: int | None = None,
+) -> RuntimeInstallResult:
+    """Build llama.cpp from source and install the binary.
+
+    Steps: check toolchain → shallow clone → cmake configure → build →
+    copy llama-server to ~/.ruach/runtime/.
+
+    Raises InstallError with a clear message at any failure point.
+    """
+    home = home or Path.home()
+    runtime_dir = home / ".ruach" / "runtime"
+    dest = runtime_dir / "llama-server"
+
+    if dest.is_file() and os.access(dest, os.X_OK):
+        return RuntimeInstallResult(dest, "already installed")
+
+    ok, detail = _check_toolchain()
+    if not ok:
+        raise InstallError(f"Cannot build llama.cpp: {detail}")
+
+    runtime_entry = load_runtimes().get("llama_cpp")
+    url = source_url or (runtime_entry.source_url if runtime_entry else "https://github.com/ggml-org/llama.cpp")
+
+    build_dir = Path(tempfile.mkdtemp(prefix="ruach-runtime-"))
+    try:
+        # 1) Clone
+        clone_cmd = ["git", "clone", "--depth=1", url, str(build_dir / "llama.cpp")]
+        try:
+            result = subprocess.run(
+                clone_cmd, capture_output=True, text=True, timeout=120, check=False
+            )
+        except FileNotFoundError:
+            raise InstallError("git not found — install git first")
+        except subprocess.TimeoutExpired:
+            raise InstallError("git clone timed out (120s) — check network connection")
+        if result.returncode != 0:
+            raise InstallError(f"git clone failed: {result.stderr.strip()[:200]}")
+
+        source_dir = build_dir / "llama.cpp"
+        build_output = build_dir / "build"
+
+        # 2) CMake configure
+        cmake_cmd = [
+            "cmake",
+            "-S", str(source_dir),
+            "-B", str(build_output),
+            "-DCMAKE_BUILD_TYPE=Release",
+        ]
+        try:
+            result = subprocess.run(
+                cmake_cmd, capture_output=True, text=True, timeout=120, check=False
+            )
+        except subprocess.TimeoutExpired:
+            raise InstallError("cmake configure timed out (120s)")
+        if result.returncode != 0:
+            raise InstallError(f"cmake configure failed: {result.stderr.strip()[:300]}")
+
+        # 3) Build llama-server
+        nproc = jobs or max(1, (os.cpu_count() or 2) - 1)
+        build_cmd = [
+            "cmake",
+            "--build", str(build_output),
+            "--config", "Release",
+            "--target", "llama-server",
+            "-j", str(nproc),
+        ]
+        try:
+            result = subprocess.run(
+                build_cmd, capture_output=True, text=True, timeout=600, check=False
+            )
+        except subprocess.TimeoutExpired:
+            raise InstallError("build timed out (600s) — try with fewer parallel jobs")
+        if result.returncode != 0:
+            raise InstallError(f"build failed: {result.stderr.strip()[:300]}")
+
+        # 4) Find and install the binary
+        candidates = list(build_output.rglob("llama-server"))
+        if not candidates:
+            # Some cmake configurations put it in bin/
+            candidates = list(build_output.rglob("bin/llama-server"))
+        if not candidates:
+            raise InstallError(
+                "build completed but llama-server binary not found in build output"
+            )
+        built_binary = candidates[0]
+
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(built_binary), str(dest))
+        dest.chmod(0o755)
+
+        # 5) Get version info
+        version_line = ""
+        try:
+            ver = subprocess.run(
+                [str(dest), "--version"],
+                capture_output=True, text=True, timeout=10, check=False
+            )
+            output = ((ver.stdout or "") + (ver.stderr or "")).strip()
+            version_line = output.splitlines()[0][:80] if output else "built successfully"
+        except Exception:  # noqa: BLE001
+            version_line = "built successfully"
+
+        return RuntimeInstallResult(dest, version_line)
+
+    finally:
+        shutil.rmtree(build_dir, ignore_errors=True)
 
 
 def model_dest_path(models_root: Path, model_id: str, registry_path: Path | None = None) -> Path:

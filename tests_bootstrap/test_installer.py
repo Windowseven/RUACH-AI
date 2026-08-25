@@ -177,8 +177,11 @@ def test_resolve_unknown_id_returns_none():
     assert resolve_model_id("does-not-exist") is None
 
 
-def test_runtime_install_is_explicitly_blocked():
-    with pytest.raises(InstallError, match="BLOCKED"):
-        from bootstrap.installer import install_runtime
+def test_runtime_install_checks_toolchain(tmp_path, monkeypatch):
+    import shutil as _shutil
 
-        install_runtime()
+    monkeypatch.setattr(_shutil, "which", lambda name: None)
+    from bootstrap.installer import install_runtime
+
+    with pytest.raises(InstallError, match="cmake not found|no C compiler|make not found"):
+        install_runtime(home=tmp_path)

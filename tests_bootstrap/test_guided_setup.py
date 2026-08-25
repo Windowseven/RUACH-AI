@@ -24,8 +24,8 @@ class IO:
         self.out.append(line)
 
 
-def make_effects(tmp_path: Path, *, runtime_found: bool = False, fail_downloads: int = 0):
-    calls = {"downloads": 0}
+def make_effects(tmp_path: Path, *, runtime_found: bool = False, fail_downloads: int = 0, fail_runtime_install: bool = False):
+    calls = {"downloads": 0, "runtime_installs": 0}
 
     def ensure_directories(home: Path) -> list[str]:
         created = []
@@ -69,6 +69,17 @@ def make_effects(tmp_path: Path, *, runtime_found: bool = False, fail_downloads:
         persist(state, state_path)
         return SimpleNamespace(path=dest, sha256="ab" * 32, resumed=False, already_present=False)
 
+    def install_runtime(home: Path):
+        calls["runtime_installs"] += 1
+        if fail_runtime_install:
+            raise InstallError("cmake not found")
+        runtime_dir = home / ".ruach" / "runtime"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        binary = runtime_dir / "llama-server"
+        binary.write_text("#!/bin/sh\necho llama-server", encoding="utf-8")
+        binary.chmod(0o755)
+        return SimpleNamespace(path=binary, version_line="llama-server b4000")
+
     def write_config(home: Path, name: str, model_path: str) -> Path:
         config_path = home / ".ruach" / "config" / "ruach.env"
         config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -83,6 +94,7 @@ def make_effects(tmp_path: Path, *, runtime_found: bool = False, fail_downloads:
         resolve_runtime=resolve_runtime,
         resolve_model=resolve_model,
         install_model=install_model,
+        install_runtime=install_runtime,
         write_config=write_config,
         backend_packages_missing=backend_packages_missing,
     )

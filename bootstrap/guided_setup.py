@@ -45,6 +45,7 @@ class SetupEffects:
     resolve_runtime: Callable[[Path], Any]
     resolve_model: Callable[[str], Any]
     install_model: Callable[..., Any]
+    install_runtime: Callable[[Path], Any]
     write_config: Callable[[Path, str, str], Path]
     backend_packages_missing: Callable[[], list[str]]
 
@@ -74,6 +75,11 @@ def default_effects() -> SetupEffects:
 
         return resolve_model_id(requested)
 
+    def install_runtime(home: Path):
+        from bootstrap.installer import install_runtime as run_install_runtime
+
+        return run_install_runtime(home=home)
+
     def write_config(home: Path, model_name: str, model_path: str) -> Path:
         from bootstrap.configgen import env_entries_for_model, write_env
 
@@ -100,6 +106,7 @@ def default_effects() -> SetupEffects:
         resolve_runtime=resolve_runtime,
         resolve_model=resolve_model,
         install_model=install_model,
+        install_runtime=install_runtime,
         write_config=write_config,
         backend_packages_missing=backend_packages_missing,
     )
@@ -333,11 +340,10 @@ def _flow(
             state.mark("runtime_installed")
             save_state(state, state_path)
     else:
-        writer("[4/5] Preparing native runtime... FAILED")
+        writer("[4/5] Preparing native runtime... NOT FOUND")
         writer("")
-        writer("Reason:")
-        writer("  No llama-server binary was found, and building llama.cpp on")
-        writer("  this platform is pending target-device validation (docs/11).")
+        writer("llama-server was not found in any of:")
+        writer("  ~/.ruach/runtime/, project .build/runtime/, or PATH")
         choice = "2"
         if interactive:
             writer("")
@@ -346,36 +352,76 @@ def _flow(
                 writer,
                 reader,
                 [
-                    ("1", "Retry detection"),
+                    ("1", "Build and install llama.cpp from source"),
                     ("2", "Continue without it (development stub can substitute)"),
                     ("3", "Show technical details"),
                     ("4", "Exit"),
                 ],
             )
             if choice == "1":
-                resolved = fx.resolve_runtime(home)
-                choice = "2" if not getattr(resolved, "found", False) else "done"
+                writer("")
+                writer("Building llama.cpp from source...")
+                writer("  This clones the repository, builds with cmake, and installs")
+                writer("  the binary to ~/.ruach/runtime/. It may take a few minutes.")
+                writer("")
+                if not ask_yes(writer, reader, "Continue?", default_yes=True):
+                    choice = "2"
+                else:
+                    try:
+                        runtime_result = fx.install_runtime(home)
+                        writer(f"  Installed: {runtime_result.path}")
+                        writer(f"  Version: {runtime_result.version_line}")
+                        resolved = fx.resolve_runtime(home)
+                        if getattr(resolved, "found", False):
+                            if state.stage in {"not_initialized", "environment_ready"}:
+                                state.mark("runtime_installed")
+                                save_state(state, state_path)
+                            choice = "done"
+                        else:
+                            writer("  x Binary installed but not detected. Check permissions.")
+                            choice = "2"
+                    except Exception as error:  # noqa: BLE001
+                        writer(f"  x Build failed: {error}")
+                        writer("")
+                        writer("You can still continue with the development stub.")
+                        choice = "2"
             elif choice == "3":
                 show_technical_details(
                     writer,
                     {
                         "searched": "config override, ~/.ruach/runtime/, project .build/runtime/, PATH",
                         "toolchain": ", ".join(sorted(report.toolchain)) or "none measured",
-                        "docs": "docs/11_TERMUX_SPIKE.md governs runtime acquisition",
+                        "source": "https://github.com/ggml-org/llama.cpp",
                     },
                 )
                 choice = ask_menu(
                     writer,
                     reader,
                     [
+                        ("1", "Build and install llama.cpp from source"),
                         ("2", "Continue without native runtime"),
                         ("4", "Exit"),
                     ],
                 )
+                if choice == "1":
+                    try:
+                        runtime_result = fx.install_runtime(home)
+                        writer(f"  Installed: {runtime_result.path}")
+                        writer(f"  Version: {runtime_result.version_line}")
+                        resolved = fx.resolve_runtime(home)
+                        if getattr(resolved, "found", False):
+                            if state.stage in {"not_initialized", "environment_ready"}:
+                                state.mark("runtime_installed")
+                                save_state(state, state_path)
+                            choice = "done"
+                    except Exception as error:  # noqa: BLE001
+                        writer(f"  x Build failed: {error}")
+                        choice = "2"
         if choice == "4":
             raise Cancelled()
-        degraded.append("native runtime binary not installed; inference needs setup or stub")
-        append_setup_log("runtime missing; continuing degraded", home=home)
+        if choice != "done":
+            degraded.append("native runtime binary not installed; inference needs setup or stub")
+            append_setup_log("runtime missing; continuing degraded", home=home)
 
     # [model]
     model_result = _model_stage(
