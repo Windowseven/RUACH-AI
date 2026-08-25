@@ -8,32 +8,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install musl cross-compiler
+      - name: Install cross-compiler
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake git curl xz-utils
-          curl -fSL https://more.musl.cc/11/x86_64-linux-musl/arm-linux-musleabihf-cross.tgz -o /tmp/musl.tgz
-          tar xzf /tmp/musl.tgz -C /opt/
-          /opt/arm-linux-musleabihf-cross/bin/arm-linux-musleabihf-gcc --version
-          echo "/opt/arm-linux-musleabihf-cross/bin" >> $GITHUB_PATH
-      - name: Clone llama.cpp
+          sudo apt-get install -y -qq cmake g++-arm-linux-gnueabihf gcc-arm-linux-gnueabihf
+      - name: Clone and build llama.cpp
         run: |
           git clone --depth 1 --branch b10622 https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
-      - name: Build
-        run: |
           cd /tmp/llama.cpp
           cmake -B build \
             -DCMAKE_SYSTEM_NAME=Linux \
             -DCMAKE_SYSTEM_PROCESSOR=armv7l \
-            -DCMAKE_C_COMPILER=arm-linux-musleabihf-gcc \
-            -DCMAKE_CXX_COMPILER=arm-linux-musleabihf-g++ \
+            -DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc \
+            -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++ \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_C_FLAGS="-mfpu=neon" \
+            -DCMAKE_CXX_FLAGS="-mfpu=neon" \
             -DLLAMA_CURL=OFF \
             -DGGML_NATIVE=OFF \
             -DLLAMA_BUILD_TESTS=OFF \
-            -DLLAMA_BUILD_EXAMPLES=OFF
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_UI=OFF
           cmake --build build --config Release -j$(nproc)
+          echo "=== Build results ==="
           file build/bin/llama-server
           ls -lh build/bin/llama-server
       - name: Package
@@ -43,5 +40,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: llama-server-arm-linux-static
+          name: llama-server-arm-linux
           path: /tmp/llama-server-arm-linux.tar.gz

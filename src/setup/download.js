@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, createWriteStream, chmodSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, createWriteStream, chmodSync, readFileSync, readdirSync, statSync, renameSync, rmSync, unlinkSync, copyFileSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
-import { homedir, arch, platform } from "os";
+import { homedir, arch, platform, cpus } from "os";
 import { pipeline } from "stream/promises";
 import { execSync } from "child_process";
 import { fileURLToPath } from "url";
@@ -11,9 +11,11 @@ const __dirname = dirname(__filename);
 const RUACH_DIR = join(homedir(), ".ruach");
 const RUNTIME_DIR = join(RUACH_DIR, "runtime");
 const MODELS_DIR = join(RUACH_DIR, "models");
+const BUILD_DIR = join(RUACH_DIR, "build-src");
 
 const RELEASES_BASE = "https://github.com/Windowseven/RUACH-AI/releases/download";
 
+// ── Platform detection ──────────────────────────────────────
 function detectArch() {
   try {
     const uname = execSync("uname -m", { encoding: "utf8" }).trim().toLowerCase();
@@ -44,8 +46,24 @@ function isTermux() {
   return existsSync("/data/data/com.termux");
 }
 
+function isArm32() {
+  return detectArch() === "arm";
+}
+
 function getServerBinaryName() {
   return platform() === "win32" ? "llama-server.exe" : "llama-server";
+}
+
+function getCpuThreads() {
+  try {
+    return Math.max(1, parseInt(execSync("nproc", { encoding: "utf8" }).trim(), 10) || 2);
+  } catch {
+    try {
+      return Math.max(1, parseInt(execSync("grep -c ^processor /proc/cpuinfo", { encoding: "utf8" }).trim(), 10) || 2);
+    } catch {
+      return Math.max(1, cpus().length - 1);
+    }
+  }
 }
 
 // ── Download helpers ───────────────────────────────────────
@@ -60,13 +78,18 @@ async function downloadFile(url, dest, label) {
 
   mkdirSync(join(dest, ".."), { recursive: true });
 
-  const curlOk = await downloadWithCurl(url, dest);
-  if (curlOk) {
+  // Try curl first (more reliable on Termux)
+  try {
+    execSync(`curl -fSL --connect-timeout 15 --max-time 600 -o "${dest}" "${url}"`, {
+      stdio: "pipe",
+      timeout: 610000,
+    });
     if (platform() !== "win32") chmodSync(dest, 0o755);
     console.log(`  ✓ ${label} installed`);
     return true;
-  }
+  } catch {}
 
+  // Fallback to Node.js fetch with retries
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const resp = await fetch(url, { redirect: "follow" });
@@ -83,20 +106,8 @@ async function downloadFile(url, dest, label) {
   }
 
   console.log(`  ✗ ${label} failed after 3 attempts`);
-  try { if (existsSync(dest)) (await import("fs")).unlinkSync(dest); } catch {}
+  try { if (existsSync(dest)) unlinkSync(dest); } catch {}
   return false;
-}
-
-async function downloadWithCurl(url, dest) {
-  try {
-    execSync(`curl -fSL --connect-timeout 15 --max-time 300 -o "${dest}" "${url}"`, {
-      stdio: "pipe",
-      timeout: 310000,
-    });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 // ── Test if binary actually runs ───────────────────────────
@@ -119,19 +130,48 @@ function testBinary(binPath) {
   }
 }
 
-// ── Build llama.cpp from source on device ──────────────────
-async function buildFromSource(destDir, bin) {
-  console.log("\n  Building llama.cpp from source...");
+// ── Get architecture-specific cmake flags ──────────────────
+function getCmakeFlags() {
+  const a = detectArch();
+  const p = platform();
+  const isAndroid = p === "android" || isTermux();
 
-  // Check build tools
+  const base = [
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DLLAMA_CURL=OFF",
+    "-DLLAMA_BUILD_TESTS=OFF",
+    "-DLLAMA_BUILD_EXAMPLES=OFF",
+    "-DLLAMA_BUILD_UI=OFF",
+  ];
+
+  // ARM32 needs NEON flags (vld1q_f16 etc. are ARMv8, need explicit NEON on ARMv7)
+  if (a === "arm") {
+    base.push("-DCMAKE_C_FLAGS=-mfpu=neon");
+    base.push("-DCMAKE_CXX_FLAGS=-mfpu=neon");
+  }
+
+  // Don't auto-detect native features on cross-compilation targets
+  if (isAndroid || a === "arm") {
+    base.push("-DGGML_NATIVE=OFF");
+  }
+
+  return base.join(" ");
+}
+
+// ── Build llama.cpp from source ────────────────────────────
+async function buildFromSource(destDir, bin) {
+  const threads = getCpuThreads();
+  const cmakeFlags = getCmakeFlags();
+  const a = detectArch();
+
+  console.log(`\n  Building llama.cpp from source...`);
+  console.log(`  Architecture: ${a} | Threads: ${threads} | Platform: ${platform()}`);
+
+  // Install build tools
   const deps = isTermux() ? ["git", "cmake", "clang"] : ["git", "cmake", "g++"];
   const missing = [];
   for (const dep of deps) {
-    try {
-      execSync(`which ${dep}`, { stdio: "pipe" });
-    } catch {
-      missing.push(dep);
-    }
+    try { execSync(`which ${dep}`, { stdio: "pipe" }); } catch { missing.push(dep); }
   }
 
   if (missing.length > 0) {
@@ -139,98 +179,94 @@ async function buildFromSource(destDir, bin) {
     try {
       if (isTermux()) {
         execSync(`pkg install -y ${missing.join(" ")}`, { stdio: "inherit", timeout: 180000 });
-      } else {
+      } else if (platform() === "linux") {
         execSync(`sudo apt-get install -y ${missing.join(" ")}`, { stdio: "inherit", timeout: 180000 });
       }
     } catch {
-      throw new Error(
-        `Failed to install build tools. Run manually:\n` +
-        `  ${isTermux() ? "pkg" : "sudo apt-get install"} ${missing.join(" ")}`
-      );
+      throw new Error(`Failed to install: ${missing.join(", ")}. Install manually first.`);
     }
   }
 
-  const buildDir = join(RUACH_DIR, "build-src");
-  mkdirSync(buildDir, { recursive: true });
+  mkdirSync(BUILD_DIR, { recursive: true });
+  const srcDir = join(BUILD_DIR, "llama.cpp");
 
   try {
-    console.log("  Cloning llama.cpp...");
-    const cloneDir = join(buildDir, "llama.cpp");
-    if (existsSync(cloneDir)) {
-      try { execSync("git pull", { cwd: cloneDir, stdio: "pipe", timeout: 60000 }); } catch {}
+    // Clone with retries (slow mobile connections)
+    if (existsSync(srcDir)) {
+      console.log("  Updating llama.cpp...");
+      try { execSync("git pull", { cwd: srcDir, stdio: "pipe", timeout: 60000 }); } catch {}
     } else {
-      // Retry clone up to 3 times (slow connections on mobile)
+      console.log("  Cloning llama.cpp (~35 MB)...");
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           execSync("git clone --depth 1 --branch b10622 https://github.com/ggml-org/llama.cpp.git", {
-            cwd: buildDir,
-            stdio: "pipe",
-            timeout: 300000,
+            cwd: BUILD_DIR,
+            stdio: "inherit",
+            timeout: 600000,
           });
           break;
         } catch (err) {
-          console.log(`    Clone attempt ${attempt}/3 failed: ${err.message}`);
+          console.log(`    Clone attempt ${attempt}/3 failed`);
           if (attempt === 3) throw err;
-          await new Promise((r) => setTimeout(r, 3000));
+          await new Promise((r) => setTimeout(r, 5000));
         }
       }
     }
 
-    const srcDir = join(buildDir, "llama.cpp");
-    console.log("  Configuring...");
-    execSync(
-      `cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF`,
-      { cwd: srcDir, stdio: "pipe", timeout: 120000 }
-    );
-
-    let threads = 2;
-    try {
-      threads = Math.max(1, parseInt(execSync("nproc", { encoding: "utf8" }).trim(), 10) || 2);
-    } catch {
-      try {
-        threads = Math.max(1, parseInt(execSync("grep -c ^processor /proc/cpuinfo", { encoding: "utf8" }).trim(), 10) || 2);
-      } catch {
-        threads = 2;
-      }
+    // Clean previous build
+    const buildSubdir = join(srcDir, "build");
+    if (existsSync(buildSubdir)) {
+      rmSync(buildSubdir, { recursive: true, force: true });
     }
-    console.log(`  Building (${threads} threads, may take 10+ minutes on mobile)...`);
-    execSync(`cmake --build build --config Release -j${threads}`, {
+
+    // Configure
+    console.log("  Configuring...");
+    execSync(`cmake -B build ${cmakeFlags}`, {
       cwd: srcDir,
       stdio: "pipe",
+      timeout: 120000,
+    });
+
+    // Build
+    console.log(`  Building (${threads} threads, ~10 min on mobile)...`);
+    execSync(`cmake --build build -j${threads}`, {
+      cwd: srcDir,
+      stdio: "inherit",
       timeout: 1200000,
     });
 
+    // Verify binary was produced
     const builtBin = join(srcDir, "build", "bin", bin);
     if (!existsSync(builtBin)) {
-      throw new Error("Build succeeded but binary not found");
+      throw new Error("Build completed but llama-server binary not found");
     }
 
+    // Copy to runtime directory
     mkdirSync(destDir, { recursive: true });
     const destBin = join(destDir, bin);
-
-    // Copy binary
-    const { copyFileSync } = await import("fs");
     copyFileSync(builtBin, destBin);
     chmodSync(destBin, 0o755);
 
     // Copy shared libs if any
     const buildBinDir = join(srcDir, "build", "bin");
     try {
-      const { readdirSync, copyFileSync: cf } = await import("fs");
       for (const f of readdirSync(buildBinDir)) {
-        if (f.startsWith("lib") && f.endsWith(".so")) {
-          cf(join(buildBinDir, f), join(destDir, f));
+        if (f.startsWith("lib") && (f.endsWith(".so") || f.endsWith(".dylib"))) {
+          copyFileSync(join(buildBinDir, f), join(destDir, f));
         }
       }
     } catch {}
 
-    console.log("  ✓ Built from source successfully");
+    // Verify it works
+    if (!testBinary(destBin)) {
+      throw new Error("Built binary doesn't run — missing dependencies?");
+    }
+
+    console.log("  ✓ Built and verified successfully");
     return destBin;
-  } finally {
-    // Clean up build dir
-    try {
-      execSync(`rm -rf "${buildDir}"`, { stdio: "pipe" });
-    } catch {}
+  } catch (err) {
+    // Don't clean up on failure — let user see the error
+    throw err;
   }
 }
 
@@ -247,28 +283,20 @@ export async function installRuntime() {
       console.log(`  ✓ Runtime already installed (${archLabel})`);
       return dest;
     }
-    console.log(`  ⚠ Existing binary incompatible`);
+    console.log(`  ⚠ Existing binary incompatible — will replace`);
   }
 
-  // On Termux: always build from source (cross-compiled binaries don't work)
-  if (isTermux()) {
-    console.log(`\n  Building runtime from source for Termux...`);
-    try {
-      return await buildFromSource(destDir, bin);
-    } catch (err) {
-      console.log(`  ✗ Build failed: ${err.message}`);
-      throw new Error(
-        `Could not build llama.cpp on Termux.\n` +
-        `Try manually:\n` +
-        `  pkg install git cmake clang\n` +
-        `  cd /tmp && git clone --depth 1 --branch b10622 https://github.com/ggml-org/llama.cpp.git\n` +
-        `  cd llama.cpp && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)\n` +
-        `  cp build/bin/llama-server ~/.ruach/runtime/${archLabel}/`
-      );
-    }
+  // Strategy depends on platform:
+  // - macOS/Linux x86_64: pre-built binaries work
+  // - ARM32 (Termux): MUST build from source (cross-compiled never works)
+  // - ARM64 Linux: try pre-built, fall back to build
+  const needsBuildFromSource = isTermux() || (platform() === "linux" && isArm32());
+
+  if (needsBuildFromSource) {
+    return await buildFromSource(destDir, bin);
   }
 
-  // Non-Termux: try pre-built binary
+  // Try pre-built binary
   const version = "0.5.0";
   const url = `${RELEASES_BASE}/v${version}/llama-server-${archLabel}.tar.gz`;
 
@@ -284,7 +312,6 @@ export async function installRuntime() {
       mkdirSync(tmpDir, { recursive: true });
       execSync(`tar -xzf "${tarDest}" -C "${tmpDir}"`, { stdio: "pipe" });
 
-      const { readdirSync, statSync, renameSync, rmSync } = await import("fs");
       const entries = readdirSync(tmpDir);
       if (entries.length === 1 && statSync(join(tmpDir, entries[0])).isDirectory()) {
         for (const f of readdirSync(join(tmpDir, entries[0]))) {
@@ -303,25 +330,31 @@ export async function installRuntime() {
         }
       }
 
-      try { (await import("fs")).unlinkSync(tarDest); } catch {}
+      try { unlinkSync(tarDest); } catch {}
     } catch (err) {
       console.log(`  ✗ Extraction failed: ${err.message}`);
     }
   }
 
+  // Verify
   if (existsSync(dest) && testBinary(dest)) {
     console.log(`  ✓ Runtime verified (${archLabel})`);
     return dest;
   }
 
-  throw new Error(`Runtime doesn't work. Run \`ruach setup\` to rebuild.`);
+  // Pre-built didn't work — try building from source
+  console.log(`  ⚠ Pre-built binary incompatible — building from source...`);
+  try {
+    return await buildFromSource(destDir, bin);
+  } catch (err) {
+    throw new Error(`Runtime doesn't work and build failed: ${err.message}`);
+  }
 }
 
 // ── Install model ──────────────────────────────────────────
 export async function installModel() {
   if (existsSync(MODELS_DIR)) {
     try {
-      const { readdirSync } = await import("fs");
       const entries = readdirSync(MODELS_DIR);
       const gguf = entries.find((e) => e.endsWith(".gguf"));
       if (gguf) {
@@ -341,10 +374,7 @@ export async function installModel() {
   const ok = await downloadFile(url, dest, "default model");
 
   if (!ok) {
-    throw new Error(
-      `Could not download model.\n` +
-      `Manually place a .gguf file in: ${MODELS_DIR}/`
-    );
+    throw new Error(`Could not download model. Manually place a .gguf file in: ${MODELS_DIR}/`);
   }
 
   return dest;
@@ -383,21 +413,18 @@ export async function fullSetup() {
   }
 
   try {
-    const { execSync } = await import("child_process");
     execSync("npm link", { cwd: projectRoot, stdio: "pipe" });
     console.log("  ✓ `ruach` command linked");
   } catch {
     console.log("  ⚠ Could not link `ruach` — use `npx ruach start` instead");
   }
 
-  const { writeFileSync } = await import("fs");
-  const config = {
+  writeFileSync(join(RUACH_DIR, "config.json"), JSON.stringify({
     version: "0.5.0",
     runtime: runtimePath,
     model: modelPath,
     installed_at: new Date().toISOString(),
-  };
-  writeFileSync(join(RUACH_DIR, "config.json"), JSON.stringify(config, null, 2));
+  }, null, 2));
 
   console.log("\n  ── Setup Complete ──────────────────────");
   if (runtimePath && modelPath) {
