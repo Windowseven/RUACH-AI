@@ -7,51 +7,51 @@ from ruach_setup.state import SetupState, SetupStateError, load_state, save_stat
 
 def test_fresh_state_when_file_missing(tmp_path):
     state = load_state(tmp_path / "absent" / "setup_state.json")
-    assert state.stage == "not_initialized"
+    assert state.stage == "new"
 
 
 def test_mark_advances_through_pipeline():
     state = SetupState()
-    state.mark("environment_ready")
-    state.mark("runtime_installed", runtime_id="llama_cpp", runtime_version="b6100")
-    state.mark("model_installed", model_id="qwen3-0.6b")
-    state.mark("configured")
-    state.mark("healthy")
-    assert state.stage == "healthy"
+    state.mark("discovering")
+    state.mark("planned")
+    state.mark("installing", runtime_id="llama_cpp", runtime_version="b6100")
+    state.mark("verifying", model_id="qwen3-0.6b")
+    state.mark("ready")
+    assert state.stage == "ready"
     assert state.runtime_id == "llama_cpp"
     assert state.model_id == "qwen3-0.6b"
 
 
 def test_backward_transition_rejected():
     state = SetupState()
-    state.mark("runtime_installed")
+    state.mark("installing")
     with pytest.raises(SetupStateError):
-        state.mark("environment_ready")
+        state.mark("discovering")
 
 
 def test_same_stage_is_idempotent():
     state = SetupState()
-    state.mark("model_installed", model_id="qwen3-0.6b")
-    state.mark("model_installed", model_id="qwen3-0.6b")
-    assert state.stage == "model_installed"
+    state.mark("installing", model_id="qwen3-0.6b")
+    state.mark("installing", model_id="qwen3-0.6b")
+    assert state.stage == "installing"
 
 
 def test_failed_stage_records_error_and_blocks_normal_advance():
     state = SetupState()
-    state.mark("environment_ready")
+    state.mark("discovering")
     state.mark("failed", last_error="download interrupted")
     assert state.stage == "failed"
     assert state.last_error == "download interrupted"
     with pytest.raises(SetupStateError):
-        state.mark("model_installed")
+        state.mark("installing")
 
 
-def test_failed_allows_restart_to_environment_ready():
+def test_failed_allows_restart_to_new():
     state = SetupState()
-    state.mark("runtime_installed")
+    state.mark("installing")
     state.mark("failed", last_error="boom")
-    state.mark("environment_ready")
-    assert state.stage == "environment_ready"
+    state.mark("new")
+    assert state.stage == "new"
 
 
 def test_unknown_stage_rejected():
@@ -63,7 +63,7 @@ def test_save_and_load_roundtrip(tmp_path):
     path = tmp_path / "state" / "setup_state.json"
     state = SetupState()
     state.mark(
-        "model_installed",
+        "installing",
         model_id="qwen3-0.6b",
         model_sha256="abc123",
     )
@@ -87,3 +87,37 @@ def test_corrupt_state_raises_clear_error(tmp_path):
     path.write_text("{not json at all", encoding="utf-8")
     with pytest.raises(SetupStateError):
         load_state(path)
+
+
+def test_old_stage_names_are_mapped(tmp_path):
+    """Old stage names from v1 state files are mapped to v2 equivalents."""
+    path = tmp_path / "setup_state.json"
+    path.write_text(json.dumps({"stage": "not_initialized"}), encoding="utf-8")
+    state = load_state(path)
+    assert state.stage == "new"
+
+    path.write_text(json.dumps({"stage": "environment_ready"}), encoding="utf-8")
+    state = load_state(path)
+    assert state.stage == "discovering"
+
+    path.write_text(json.dumps({"stage": "healthy"}), encoding="utf-8")
+    state = load_state(path)
+    assert state.stage == "ready"
+
+
+def test_terminal_states():
+    for stage in ("ready", "degraded", "blocked", "failed"):
+        state = SetupState(stage=stage)
+        assert state.is_terminal is True
+
+
+def test_non_terminal_states():
+    for stage in ("new", "discovering", "planned", "installing", "verifying"):
+        state = SetupState(stage=stage)
+        assert state.is_terminal is False
+
+
+def test_completed_and_remaining_stages():
+    state = SetupState(stage="installing")
+    assert "discovering" in state.completed_stages
+    assert "verifying" in state.remaining_stages

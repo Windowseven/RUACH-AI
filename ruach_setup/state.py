@@ -1,10 +1,16 @@
-"""Setup installation state (ARCH-009 §46).
+"""Setup installation state (v2).
 
 Tracks pipeline progress in ~/.ruach/setup_state.json so `./ruach setup`
 can resume after interruption and stay idempotent across reruns.
 
-Platform-independent: pure JSON file handling with atomic writes. The path
-is always injected, so tests use temporary directories.
+New state machine (v2):
+  NEW → DISCOVERING → PLANNED → INSTALLING → VERIFYING → READY
+                                                         → DEGRADED
+                                                         → BLOCKED
+                                        any stage  → FAILED
+
+Backward compatible: old stage names (not_initialized, environment_ready,
+etc.) are mapped to v2 equivalents on load.
 """
 
 import json
@@ -13,14 +19,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 STAGES = (
-    "not_initialized",
-    "environment_ready",
-    "runtime_installed",
-    "model_installed",
-    "configured",
-    "healthy",
+    "new",
+    "discovering",
+    "planned",
+    "installing",
+    "verifying",
+    "ready",
+    "degraded",
+    "blocked",
 )
 _STAGE_ORDER = {name: index for index, name in enumerate(STAGES)}
+
+# Backward compatibility: map old stage names to v2
+_OLD_TO_NEW: dict[str, str] = {
+    "not_initialized": "new",
+    "environment_ready": "discovering",
+    "runtime_installed": "installing",
+    "model_installed": "installing",
+    "configured": "verifying",
+    "healthy": "ready",
+}
 
 
 class SetupStateError(Exception):
@@ -29,7 +47,8 @@ class SetupStateError(Exception):
 
 @dataclass
 class SetupState:
-    stage: str = "not_initialized"
+    stage: str = "new"
+    profile: str | None = None  # RuntimeProfile value
     runtime_id: str | None = None
     runtime_version: str | None = None
     model_id: str | None = None
@@ -43,28 +62,61 @@ class SetupState:
             for key, value in fields.items():
                 setattr(self, key, value)
             return
+        # Backward compatibility: map old stage names
+        stage = _OLD_TO_NEW.get(stage, stage)
         if stage not in _STAGE_ORDER:
             raise SetupStateError(f"Unknown stage: {stage}")
-        current = _STAGE_ORDER[self.stage] if self.stage != "failed" else 0
+        current = _STAGE_ORDER.get(self.stage, 0) if self.stage != "failed" else 0
         target = _STAGE_ORDER[stage]
         if self.stage == "failed":
-            if target != 1:
-                raise SetupStateError("Cannot resume from failed state except to environment_ready")
+            if target != 0:
+                raise SetupStateError(
+                    "Cannot resume from failed state except to new"
+                )
         elif target < current:
-            raise SetupStateError(f"Cannot move backwards from '{self.stage}' to '{stage}'")
+            raise SetupStateError(
+                f"Cannot move backwards from '{self.stage}' to '{stage}'"
+            )
         self.stage = stage
         for key, value in fields.items():
             setattr(self, key, value)
 
+    @property
+    def is_terminal(self) -> bool:
+        return self.stage in ("ready", "degraded", "blocked", "failed")
+
+    @property
+    def completed_stages(self) -> list[str]:
+        """Stages that have been successfully completed."""
+        if self.stage == "failed":
+            return []
+        idx = _STAGE_ORDER.get(self.stage, 0)
+        return [s for s in STAGES[:idx] if s not in ("ready", "degraded", "blocked")]
+
+    @property
+    def remaining_stages(self) -> list[str]:
+        """Stages yet to be completed."""
+        if self.stage in ("ready", "degraded", "blocked", "failed"):
+            return []
+        idx = _STAGE_ORDER.get(self.stage, 0)
+        return [s for s in STAGES[idx:] if s not in ("ready", "degraded", "blocked")]
+
 
 def load_state(path: Path) -> SetupState:
-    """Load state; a missing or empty file yields a fresh NOT_INITIALIZED state."""
+    """Load state; a missing or empty file yields a fresh NEW state.
+
+    Old stage names are mapped to v2 equivalents for backward compatibility.
+    """
     if not path.is_file():
         return SetupState()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
+        stage = raw["stage"]
+        # Backward compatibility: map old stage names
+        stage = _OLD_TO_NEW.get(stage, stage)
         return SetupState(
-            stage=raw["stage"],
+            stage=stage,
+            profile=raw.get("profile"),
             runtime_id=raw.get("runtime_id"),
             runtime_version=raw.get("runtime_version"),
             model_id=raw.get("model_id"),
@@ -84,6 +136,7 @@ def save_state(state: SetupState, path: Path) -> None:
         json.dumps(
             {
                 "stage": state.stage,
+                "profile": state.profile,
                 "runtime_id": state.runtime_id,
                 "runtime_version": state.runtime_version,
                 "model_id": state.model_id,

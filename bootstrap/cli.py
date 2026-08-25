@@ -292,19 +292,25 @@ def cmd_doctor(
     check_inference: bool = False,
 ) -> int:
     """Read-only deep diagnostics. Never modifies the system (docs/15 §4)."""
-    from bootstrap.doctor_engine import render_concise, render_verbose, run_doctor
+    from ruach_setup.doctor_engine import doctor, check_functional
 
-    report = run_doctor(check_runtime=check_runtime, check_inference=check_inference)
+    environment = check_functional() if check_runtime or check_inference else doctor()
 
     if json_output:
-        print(json.dumps(report.to_json(), indent=2))
-        return 0 if report.status == "READY" else 1
+        print(json.dumps(environment.to_json(), indent=2))
+        return 0 if environment.status == "pass" else 1
 
     print("RUACH DOCTOR")
     print("═" * 32)
-    print(render_verbose(report) if verbose else render_concise(report))
-    healthy = report.status == "READY"
+    print(f"  OS       : {environment.os}")
+    print(f"  Arch     : {environment.arch}")
+    print(f"  CPU      : {environment.cpu}")
+    print(f"  RAM      : {environment.ram or 'unknown'}")
+    print(f"  Inference: {environment.inference_backend}")
+    print(f"  Runtime  : {environment.runtime_backend}")
+    print(f"  Target   : {'yes' if environment.target_device else 'no'}")
     print()
+    healthy = environment.status == "pass"
     print("RUACH is healthy." if healthy else "Problems detected.")
     return 0 if healthy else 1
 
@@ -726,8 +732,8 @@ def main(argv: list[str] | None = None) -> int:
     setup_parser.add_argument(
         "--mode",
         default="auto",
-        choices=["auto", "native", "hybrid", "lightweight", "cli"],
-        help="requested installation mode (validated against capabilities)",
+        choices=["auto", "hybrid", "native", "python", "compatibility", "stub"],
+        help="requested installation mode (validated against device capabilities)",
     )
 
     doctor_parser = subparsers.add_parser("doctor", help="diagnose installation health")

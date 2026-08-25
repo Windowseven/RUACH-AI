@@ -1,13 +1,17 @@
-"""Synthetic device fixtures for Doctor testing (docs/15 §38, docs/17 §45).
+"""Synthetic device fixtures for Doctor testing.
 
 Doctor MUST be testable independently from real hardware. Each fixture is
 a complete DecisionInput snapshot representing a documented device class,
 plus the profile the decision engine is expected to select. Fixtures are
 data only — no probing happens here.
 
-The ARMv7 fixture mirrors the reference device measured in docs/15 §37:
-ARMv7 32-bit, ~1.87 GB RAM (~594 MB available at test time), clang/cmake/
-make/ninja present, Rust unavailable, pydantic-core wheel unavailable.
+Profiles (v2):
+  FULL_HYBRID     — Python backend + native inference (best experience)
+  NATIVE_HYBRID   — native inference + lightweight orchestration
+  PYTHON_HYBRID   — Python backend + alternative inference provider
+  COMPATIBILITY   — constrained device, no full inference, still useful
+  DEVELOPMENT_STUB — dev/testing only, no real inference
+  UNSUPPORTED     — nothing works
 """
 
 from __future__ import annotations
@@ -47,6 +51,7 @@ def _fixture(
     tier: str,
     environment: str,
     expected: RuntimeProfile,
+    native_build_failed: bool = False,
 ) -> DeviceFixture:
     return DeviceFixture(
         name=name,
@@ -64,6 +69,7 @@ def _fixture(
             native_binary_found=binary_found,
             inference_level=inference_level,
             python_deps_healthy=deps_healthy,
+            native_build_previously_failed=native_build_failed,
             resource_tier=tier,
             environment_status=environment,
         ),
@@ -71,30 +77,8 @@ def _fixture(
     )
 
 
-# docs/15 §37 reference case: the primary HYBRID-NATIVE test target.
-ANDROID_ARMV7_LOW_MEMORY = _fixture(
-    "android_armv7_low_memory",
-    "Reference Android ARMv7 device (itel A6611L class): ~1.87 GB RAM, "
-    "~594 MB available, full LLVM toolchain, no Rust, pydantic-core "
-    "wheel unavailable.",
-    arch_supported=True,
-    abi="armeabi-v7a",
-    ram_total=int(1.87 * GiB),
-    ram_available=594 * 1024 * 1024,
-    storage_free=31 * GiB,
-    python_ok=True,
-    python_version="3.14.6",
-    compilers=("clang", "make", "cmake", "ninja", "git"),
-    rust=False,
-    binary_found=False,
-    inference_level=InferenceLevel.BUILDABLE,
-    deps_healthy=False,
-    tier="light",
-    environment="target_device",
-    expected=RuntimeProfile.HYBRID_NATIVE,
-)
+# ---- FULL_HYBRID: Python full stack + native inference viable ----
 
-# docs/15 §39 matrix row: Android capable ARM64 4-8 GB -> HYBRID-PYTHON.
 ANDROID_ARM64_CAPABLE = _fixture(
     "android_arm64_capable",
     "Capable Android phone: ARM64, 8 GB RAM, healthy Python wheels, "
@@ -113,29 +97,27 @@ ANDROID_ARM64_CAPABLE = _fixture(
     deps_healthy=True,
     tier="performance",
     environment="target_device",
-    expected=RuntimeProfile.HYBRID_PYTHON,
+    expected=RuntimeProfile.FULL_HYBRID,
 )
 
-# docs/17 §45: ARM64 constrained expects HYBRID or LIGHTWEIGHT.
-ANDROID_ARM64_CONSTRAINED = _fixture(
-    "android_arm64_constrained",
-    "Constrained Android phone: ARM64, ~2 GB RAM available, dependency "
-    "health unknown pending measurement.",
+LINUX_X86_64_DESKTOP = _fixture(
+    "linux_x86_64_desktop",
+    "Desktop Linux x86_64: everything supported.",
     arch_supported=True,
-    abi="arm64-v8a",
-    ram_total=4 * GiB,
-    ram_available=2 * GiB,
-    storage_free=16 * GiB,
+    abi="x86_64",
+    ram_total=16 * GiB,
+    ram_available=12 * GiB,
+    storage_free=200 * GiB,
     python_ok=True,
-    python_version="3.12.1",
-    compilers=("clang", "make", "cmake", "ninja", "git"),
-    rust=False,
+    python_version="3.12.4",
+    compilers=("clang", "gcc", "make", "cmake", "ninja", "git"),
+    rust=True,
     binary_found=False,
     inference_level=InferenceLevel.BUILDABLE,
-    deps_healthy=None,
-    tier="balanced",
-    environment="target_device",
-    expected=RuntimeProfile.HYBRID_NATIVE,
+    deps_healthy=True,
+    tier="performance",
+    environment="development_host",
+    expected=RuntimeProfile.FULL_HYBRID,
 )
 
 LINUX_ARM64 = _fixture(
@@ -155,34 +137,13 @@ LINUX_ARM64 = _fixture(
     deps_healthy=True,
     tier="performance",
     environment="unknown",
-    expected=RuntimeProfile.HYBRID_PYTHON,
-)
-
-LINUX_X86_64_DESKTOP = _fixture(
-    "linux_x86_64_desktop",
-    "Desktop Linux x86_64: everything supported (docs/15 §39 matrix).",
-    arch_supported=True,
-    abi="x86_64",
-    ram_total=16 * GiB,
-    ram_available=12 * GiB,
-    storage_free=200 * GiB,
-    python_ok=True,
-    python_version="3.12.4",
-    compilers=("clang", "gcc", "make", "cmake", "ninja", "git"),
-    rust=True,
-    binary_found=False,
-    inference_level=InferenceLevel.BUILDABLE,
-    deps_healthy=True,
-    tier="performance",
-    environment="development_host",
-    expected=RuntimeProfile.HYBRID_PYTHON,
+    expected=RuntimeProfile.FULL_HYBRID,
 )
 
 MACOS_DEVELOPMENT_HOST = _fixture(
     "macos_development_host",
     "macOS development machine: full Python stack and a working "
-    "toolchain; per the docs/15 §39 desktop matrix this selects "
-    "HYBRID-PYTHON once a runtime is built or resolved.",
+    "toolchain; selects FULL_HYBRID once a runtime is built or resolved.",
     arch_supported=True,
     abi="x86_64",
     ram_total=16 * GiB,
@@ -197,32 +158,54 @@ MACOS_DEVELOPMENT_HOST = _fixture(
     deps_healthy=True,
     tier="performance",
     environment="development_host",
-    expected=RuntimeProfile.HYBRID_PYTHON,
+    expected=RuntimeProfile.FULL_HYBRID,
 )
 
-# PYTHON profile: Python healthy but NO viable native path at all.
-LINUX_MINIMAL_NO_TOOLCHAIN = _fixture(
-    "linux_minimal_no_toolchain",
-    "Minimal Linux container: healthy pure-Python stack but no C "
-    "compiler or build tools; inference must come from an adapter.",
+# ---- NATIVE_HYBRID: native inference works, Python limited ----
+
+ANDROID_ARMV7_LOW_MEMORY = _fixture(
+    "android_armv7_low_memory",
+    "Reference Android ARMv7 device (itel A6611L class): ~1.87 GB RAM, "
+    "~594 MB available, full LLVM toolchain, no Rust, pydantic-core "
+    "wheel unavailable.",
     arch_supported=True,
-    abi="x86_64",
-    ram_total=4 * GiB,
-    ram_available=3 * GiB,
-    storage_free=20 * GiB,
+    abi="armeabi-v7a",
+    ram_total=int(1.87 * GiB),
+    ram_available=594 * 1024 * 1024,
+    storage_free=31 * GiB,
     python_ok=True,
-    python_version="3.12.1",
-    compilers=("git",),
+    python_version="3.14.6",
+    compilers=("clang", "make", "cmake", "ninja", "git"),
     rust=False,
     binary_found=False,
-    inference_level=InferenceLevel.NOT_TESTED,
-    deps_healthy=True,
-    tier="balanced",
-    environment="unknown",
-    expected=RuntimeProfile.PYTHON,
+    inference_level=InferenceLevel.BUILDABLE,
+    deps_healthy=False,
+    tier="light",
+    environment="target_device",
+    expected=RuntimeProfile.NATIVE_HYBRID,
 )
 
-# NATIVE profile: inference viable, Python control plane unavailable.
+ANDROID_ARM64_CONSTRAINED = _fixture(
+    "android_arm64_constrained",
+    "Constrained Android phone: ARM64, ~2 GB RAM available, dependency "
+    "health unknown pending measurement.",
+    arch_supported=True,
+    abi="arm64-v8a",
+    ram_total=4 * GiB,
+    ram_available=2 * GiB,
+    storage_free=16 * GiB,
+    python_ok=True,
+    python_version="3.12.1",
+    compilers=("clang", "make", "cmake", "ninja", "git"),
+    rust=False,
+    binary_found=False,
+    inference_level=InferenceLevel.BUILDABLE,
+    deps_healthy=None,
+    tier="balanced",
+    environment="target_device",
+    expected=RuntimeProfile.NATIVE_HYBRID,
+)
+
 NATIVE_ONLY_DEVICE = _fixture(
     "native_only_device",
     "Appliance-class ARM64 board: llama.cpp buildable but no usable "
@@ -241,14 +224,38 @@ NATIVE_ONLY_DEVICE = _fixture(
     deps_healthy=None,
     tier="balanced",
     environment="unknown",
-    expected=RuntimeProfile.NATIVE,
+    expected=RuntimeProfile.NATIVE_HYBRID,
 )
 
-# MINIMAL profile: like NATIVE_ONLY but memory is severely constrained.
+# ---- PYTHON_HYBRID: Python healthy but no native inference ----
+
+LINUX_MINIMAL_NO_TOOLCHAIN = _fixture(
+    "linux_minimal_no_toolchain",
+    "Minimal Linux container: healthy pure-Python stack but no C "
+    "compiler or build tools; inference must come from an adapter.",
+    arch_supported=True,
+    abi="x86_64",
+    ram_total=4 * GiB,
+    ram_available=3 * GiB,
+    storage_free=20 * GiB,
+    python_ok=True,
+    python_version="3.12.1",
+    compilers=("git",),
+    rust=False,
+    binary_found=False,
+    inference_level=InferenceLevel.NOT_TESTED,
+    deps_healthy=True,
+    tier="balanced",
+    environment="unknown",
+    expected=RuntimeProfile.PYTHON_HYBRID,
+)
+
+# ---- COMPATIBILITY: severely constrained ----
+
 SEVERELY_CONSTRAINED_NATIVE = _fixture(
     "severely_constrained_native",
     "Very low-memory device with a working toolchain and no Python: "
-    "smallest viable native installation (docs/15 §19).",
+    "native inference is still viable despite constraints.",
     arch_supported=True,
     abi="arm64-v8a",
     ram_total=1 * GiB,
@@ -263,7 +270,53 @@ SEVERELY_CONSTRAINED_NATIVE = _fixture(
     deps_healthy=None,
     tier="light",
     environment="target_device",
-    expected=RuntimeProfile.MINIMAL,
+    expected=RuntimeProfile.NATIVE_HYBRID,
+)
+
+# ---- UNSUPPORTED: nothing works ----
+
+UNSUPPORTED_DEVICE = _fixture(
+    "unsupported_device",
+    "No Python, no inference, architecture unsupported.",
+    arch_supported=False,
+    abi="unknown",
+    ram_total=None,
+    ram_available=None,
+    storage_free=None,
+    python_ok=False,
+    python_version="3.7.0",
+    compilers=(),
+    rust=False,
+    binary_found=False,
+    inference_level=InferenceLevel.NOT_TESTED,
+    deps_healthy=None,
+    tier="unknown",
+    environment="unknown",
+    expected=RuntimeProfile.UNSUPPORTED,
+)
+
+# ---- NATIVE_HYBRID with previously failed build ----
+
+BUILD_FAILED_DEVICE = _fixture(
+    "build_failed_device",
+    "Device where llama.cpp build was previously attempted and failed. "
+    "Engine honestly reports COMPATIBILITY, not NATIVE_HYBRID.",
+    arch_supported=True,
+    abi="armeabi-v7a",
+    ram_total=int(1.87 * GiB),
+    ram_available=594 * 1024 * 1024,
+    storage_free=31 * GiB,
+    python_ok=True,
+    python_version="3.14.6",
+    compilers=("clang", "make", "cmake", "ninja", "git"),
+    rust=False,
+    binary_found=False,
+    inference_level=InferenceLevel.BUILDABLE,
+    deps_healthy=False,
+    native_build_failed=True,
+    tier="light",
+    environment="target_device",
+    expected=RuntimeProfile.COMPATIBILITY,
 )
 
 ALL_FIXTURES: tuple[DeviceFixture, ...] = (
@@ -276,6 +329,8 @@ ALL_FIXTURES: tuple[DeviceFixture, ...] = (
     LINUX_MINIMAL_NO_TOOLCHAIN,
     NATIVE_ONLY_DEVICE,
     SEVERELY_CONSTRAINED_NATIVE,
+    UNSUPPORTED_DEVICE,
+    BUILD_FAILED_DEVICE,
 )
 
 
@@ -284,11 +339,13 @@ __all__ = [
     "ANDROID_ARM64_CAPABLE",
     "ANDROID_ARM64_CONSTRAINED",
     "ANDROID_ARMV7_LOW_MEMORY",
+    "BUILD_FAILED_DEVICE",
     "LINUX_ARM64",
     "LINUX_MINIMAL_NO_TOOLCHAIN",
     "LINUX_X86_64_DESKTOP",
     "MACOS_DEVELOPMENT_HOST",
     "NATIVE_ONLY_DEVICE",
     "SEVERELY_CONSTRAINED_NATIVE",
+    "UNSUPPORTED_DEVICE",
     "DeviceFixture",
 ]

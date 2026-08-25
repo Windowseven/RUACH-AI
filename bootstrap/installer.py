@@ -26,9 +26,22 @@ class InstallError(Exception):
 
 
 def _mark_forward(state: SetupState, stage: str, **fields: str | None) -> None:
-    """Advance the pipeline without ever moving backwards on resume."""
-    if _STAGE_INDEX.get(state.stage, -1) < _STAGE_INDEX[stage]:
-        state.mark(stage, **fields)
+    """Advance the pipeline without ever moving backwards on resume.
+
+    Old stage names (environment_ready, model_installed) are mapped to
+    v2 equivalents for backward compatibility.
+    """
+    _OLD_MAP = {
+        "environment_ready": "discovering",
+        "model_installed": "installing",
+        "runtime_installed": "installing",
+        "configured": "verifying",
+        "healthy": "ready",
+        "not_initialized": "new",
+    }
+    new_stage = _OLD_MAP.get(stage, stage)
+    if _STAGE_INDEX.get(state.stage, -1) < _STAGE_INDEX.get(new_stage, -1):
+        state.mark(new_stage, **fields)
         return
     for key, value in fields.items():
         setattr(state, key, value)

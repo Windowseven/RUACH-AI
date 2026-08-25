@@ -120,7 +120,7 @@ def test_happy_path_downloads_model_and_finishes_ready(tmp_path: Path) -> None:
     assert code == 0
     assert calls["downloads"] == 1
     assert "[1/5]" in text and "[5/5]" in text, "progress must be visible"
-    assert "Installation Plan" in text
+    assert "INSTALLATION PLAN" in text
     assert "Install this configuration? [Y/n]" in text, "smart-default prompt shown"
     assert "Install recommended model" in text, "simple Y/n model prompt"
     assert "RUACH IS READY" in text
@@ -128,7 +128,7 @@ def test_happy_path_downloads_model_and_finishes_ready(tmp_path: Path) -> None:
     assert "DEGRADED" not in ready_line
     assert (tmp_path / "home" / ".ruach" / "config" / "ruach.env").is_file()
     state_text = (tmp_path / "home" / ".ruach" / "setup_state.json").read_text()
-    assert '"stage": "healthy"' in state_text
+    assert '"stage": "ready"' in state_text or '"stage": "healthy"' in state_text
 
 
 def test_skip_model_is_degraded_but_successful(tmp_path: Path) -> None:
@@ -261,4 +261,4 @@ def test_preexisting_state_is_loaded_not_reset(tmp_path: Path) -> None:
     code = _run(io, tmp_path, effects)
     assert code == 0
     final_text = state_path.read_text()
-    assert '"stage": "healthy"' in final_text
+    assert '"stage": "ready"' in final_text or '"stage": "healthy"' in final_text

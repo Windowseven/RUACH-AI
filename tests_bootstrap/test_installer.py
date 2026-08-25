@@ -74,7 +74,7 @@ def test_install_downloads_verifies_and_marks_state(file_server, tmp_path):
     assert result.sha256 == sha
     assert not result.already_present
     assert not (result.path.parent / "test.gguf.part").exists()
-    assert state.stage == "model_installed"
+    assert state.stage == "installing"
     assert (tmp_path / "state.json").is_file()
 
 

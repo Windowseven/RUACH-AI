@@ -110,7 +110,7 @@ def test_setup_incomplete_offers_resume(tmp_path: Path) -> None:
     (home / ".ruach" / "setup_state.json").write_text('{"stage": "model_installed"}')
     resolved = resolve_state(home=home, run_dir=tmp_path / "run")
     assert resolved.state is CliState.SETUP_INCOMPLETE
-    assert resolved.setup_stage == "model_installed"
+    assert resolved.setup_stage == "installing"
 
     io = FakeIO(["1", "0"])  # resume setup, then exit
     calls: dict = {}

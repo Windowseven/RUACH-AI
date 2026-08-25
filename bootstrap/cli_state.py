@@ -26,7 +26,7 @@ from bootstrap.runtime_resolver import (
     resolve_llama_server,
 )
 
-SETUP_COMPLETE_STAGES = {"configured", "healthy"}
+SETUP_COMPLETE_STAGES = {"configured", "healthy", "verifying", "ready", "degraded", "blocked"}
 
 
 class CliState(str, Enum):

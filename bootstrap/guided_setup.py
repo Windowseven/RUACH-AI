@@ -478,6 +478,11 @@ def _flow(
         "runtime_installed",
         "model_installed",
         "configured",
+        "new",
+        "discovering",
+        "planned",
+        "installing",
+        "verifying",
     }:
         state.mark("healthy")
         save_state(state, state_path)
