@@ -26,13 +26,20 @@ jobs:
             -DLLAMA_CURL=OFF \
             -DGGML_NATIVE=OFF
           cmake --build build --config Release -j$(nproc)
+          echo "=== Build output ==="
+          ls -la build/bin/llama-server || echo "Binary not found in build/bin/"
+          find build -name "llama-server" -type f
+          file build/bin/llama-server || echo "Cannot check file type"
       - name: Package
         run: |
           cd /tmp/llama.cpp
           mkdir -p arm32
           cp build/bin/llama-server arm32/
           cd arm32
+          file llama-server
+          ls -lh llama-server
           tar -czf llama-server-arm-linux.tar.gz llama-server
+          ls -lh llama-server-arm-linux.tar.gz
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
