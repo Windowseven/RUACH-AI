@@ -222,7 +222,8 @@ export async function fullSetup() {
   }
 
   // 3. Build frontend (skip if dist/ already exists — committed to repo)
-  const frontendDist = join(import.meta.dirname, "..", "frontend", "dist");
+  const projectRoot = join(import.meta.dirname, "..", "..");
+  const frontendDist = join(projectRoot, "frontend", "dist");
   const frontendIndex = join(frontendDist, "index.html");
   if (existsSync(frontendIndex)) {
     console.log("\n  ✓ Frontend pre-built (dist/index.html found)");
@@ -230,12 +231,12 @@ export async function fullSetup() {
     console.log("\n  Building frontend...");
     try {
       const { execSync } = await import("child_process");
-      const frontendDir = join(import.meta.dirname, "..", "frontend");
+      const frontendDir = join(projectRoot, "frontend");
       execSync("npm install", { cwd: frontendDir, stdio: "pipe" });
       execSync("npx tsc -b && npx vite build", { cwd: frontendDir, stdio: "pipe" });
       console.log("  ✓ Frontend built");
     } catch (err) {
-      console.log("  ⚠ Frontend build skipped — run `cd frontend && npm install && npm run build` on a desktop");
+      console.log("  ⚠ Frontend build failed — run `cd frontend && npm install && npm run build` on a desktop");
     }
   }
 
