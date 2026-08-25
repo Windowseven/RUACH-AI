@@ -504,6 +504,18 @@ def _load_state_safe(state_path: Path) -> SetupState:
         return SetupState()
 
 
+def _existing_model_path(
+    fx: SetupEffects, models_root: Path, request: str
+) -> str | None:
+    """Check if a valid model is already on disk. Returns path or None."""
+    entry = fx.resolve_model(request)
+    if entry is None:
+        return None
+    file_name = getattr(entry, "file_name", None) or f"{entry.id}.gguf"
+    dest = models_root / entry.id / Path(file_name).name
+    return str(dest) if dest.is_file() else None
+
+
 def _model_stage(
     *,
     writer: Writer,
@@ -522,47 +534,32 @@ def _model_stage(
 
     entry = fx.resolve_model(request)
 
-    choice = "1"
-    if interactive:
+    existing = _existing_model_path(fx, models_root, request)
+    if existing is not None:
         writer("")
-        writer("Model setup")
-        options = []
-        if entry is not None:
-            size_mb = entry.download_size_bytes // (1024 * 1024)
-            options.append(("1", f"Download recommended model ({entry.id}, ~{size_mb} MB)"))
-        options.append(("2", "Use an existing model file"))
-        options.append(("3", "Skip model setup"))
-        choice = ask_menu(writer, reader, options)
-    else:
-        if entry is None:
-            writer("")
-            writer("Model setup... no recommended model fits this device (skipped)")
-            return None
-        writer("")
-        writer(
-            f"Model setup... downloading {entry.id} "
-            f"(~{entry.download_size_bytes // (1024 * 1024)} MB)"
-        )
-
-    if choice == "3":
-        writer("  Skipped (optional at this stage)")
-        return None
-
-    if choice == "2":
-        writer("  Enter model path:")
-        try:
-            raw_path = (reader() if reader else "").strip()
-        except (EOFError, KeyboardInterrupt):
-            raise Cancelled() from None
-        candidate = Path(raw_path).expanduser()
-        if not candidate.is_file():
-            writer(f"  x No file at {candidate}; skipping model setup.")
-            return None
-        return str(candidate)
+        writer(f"Model already installed: {Path(existing).name}")
+        return existing
 
     if entry is None:
-        writer("  x No installable model resolved for this device.")
+        writer("")
+        writer("Model setup... no recommended model fits this device (skipped)")
         return None
+
+    size_mb = entry.download_size_bytes // (1024 * 1024)
+
+    if interactive:
+        writer("")
+        if not ask_yes(
+            writer,
+            reader,
+            f"Install recommended model ({entry.id}, ~{size_mb} MB)?",
+            default_yes=True,
+        ):
+            writer("  Skipped (optional at this stage)")
+            return None
+    else:
+        writer("")
+        writer(f"Model setup... downloading {entry.id} (~{size_mb} MB)")
 
     try:
         result = fx.install_model(entry.id, models_root, state, state_path)

@@ -101,7 +101,7 @@ def _run(io: IO, tmp_path: Path, effects, **kwargs) -> int:
 
 
 def test_happy_path_downloads_model_and_finishes_ready(tmp_path: Path) -> None:
-    io = IO(["y", "y", "1"])  # ready; install plan; download recommended model
+    io = IO(["y", "y", "y"])  # ready; install plan; download recommended model
     effects, calls = make_effects(tmp_path, runtime_found=True)
     code = _run(io, tmp_path, effects)
     text = chr(10).join(io.out)
@@ -110,6 +110,7 @@ def test_happy_path_downloads_model_and_finishes_ready(tmp_path: Path) -> None:
     assert "[1/5]" in text and "[5/5]" in text, "progress must be visible"
     assert "Installation Plan" in text
     assert "Install this configuration? [Y/n]" in text, "smart-default prompt shown"
+    assert "Install recommended model" in text, "simple Y/n model prompt"
     assert "RUACH IS READY" in text
     ready_line = next(line for line in io.out if line.startswith("RUACH IS READY"))
     assert "DEGRADED" not in ready_line
@@ -188,7 +189,7 @@ def test_non_interactive_never_prompts_and_uses_defaults(tmp_path: Path) -> None
 
 def test_download_failure_offers_retry_then_recovers_or_degrades(tmp_path: Path) -> None:
     """docs/17 §15/§16: failures produce actionable choices; retry is safe."""
-    io = IO(["y", "y", "2", "1", "n"])  # continue w/o runtime; fail; decline retry
+    io = IO(["y", "y", "2", "y", "n"])  # ready; plan; continue w/o runtime; download model; decline retry
     effects, calls = make_effects(tmp_path, fail_downloads=1)
     code = _run(io, tmp_path, effects)
     text = chr(10).join(io.out)
@@ -200,15 +201,18 @@ def test_download_failure_offers_retry_then_recovers_or_degrades(tmp_path: Path)
 
 
 def test_existing_model_path_is_accepted(tmp_path: Path) -> None:
-    existing = tmp_path / "existing.gguf"
+    models_root = tmp_path / "home" / ".ruach" / "models"
+    fake_dir = models_root / "qwen3-0.6b-q8"
+    fake_dir.mkdir(parents=True)
+    existing = fake_dir / "qwen3-0.6b-q8.gguf"
     existing.write_bytes(b"g")
-    io = IO(["y", "y", "2", "2", str(existing)])
+    io = IO(["y", "y", "2"])  # ready; plan; continue w/o runtime; model already present
     effects, calls = make_effects(tmp_path)
     code = _run(io, tmp_path, effects)
     text = chr(10).join(io.out)
     assert code == 0
     assert calls["downloads"] == 0
-    assert "existing.gguf" in text
+    assert "Model already installed" in text
     assert (tmp_path / "home" / ".ruach" / "config" / "ruach.env").is_file()
 
 

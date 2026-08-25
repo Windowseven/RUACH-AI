@@ -31,6 +31,45 @@ benchmark), `./ruach version`.
 - **Simple UI** — React + Vite + TypeScript + Tailwind, built to static
   files served by the backend (Node is needed only to build).
 
+## Termux (Android)
+
+The CLI itself is stdlib-only — it runs on Termux's Python with no
+installation step. After cloning:
+
+```sh
+pkg update && pkg install python git
+termux-wake-lock                 # keep the device awake during setup
+cd RUACH-AI
+
+./ruach                          # guided entrypoint (first run offers Setup)
+# or command-by-command:
+./ruach doctor                   # what THIS device can do (read-only)
+./ruach setup                    # guided: directories + model + config
+```
+
+What setup does and does not do on Termux:
+
+- **Works now:** device scan, capability report, installation plan,
+  model download (verified SHA-256), config generation, verification.
+- **Pending spike (docs/11):** building llama.cpp on-device. Until the
+  spike records a PASS, there are two honest paths:
+  - run the Part B build from docs/11 yourself and place the binary at
+    `~/.ruach/runtime/llama-server` (doctor/setup then detect it), or
+  - develop against the deterministic stub: `./ruach start --stub`.
+
+For the full API/UI stack inside Termux:
+
+```sh
+python -m venv .venv && . .venv/bin/activate
+pip install -U pip wheel
+pip install -e ./backend         # armv7 note: docs/15 §37 records the
+                                 # pydantic-core wheel constraint here
+./ruach start                    # http://127.0.0.1:8018
+```
+
+Model transfer from a development host (no big download on the phone):
+see docs/11 Part C — `./staging/push_model.sh` (adb or scp routes).
+
 ## Requirements
 
 - Python 3.11+ (3.12 tested)
