@@ -123,9 +123,28 @@ export async function installRuntime() {
   const extractDir = join(RUNTIME_DIR, archLabel);
   mkdirSync(extractDir, { recursive: true });
   try {
-    execSync(`tar -xzf "${tarDest}" -C "${extractDir}" --strip-components=1`, {
-      stdio: "pipe",
-    });
+    // Extract to temp dir first to handle both flat and nested archives
+    const tmpDir = join(RUNTIME_DIR, `_tmp_${archLabel}`);
+    mkdirSync(tmpDir, { recursive: true });
+    execSync(`tar -xzf "${tarDest}" -C "${tmpDir}"`, { stdio: "pipe" });
+
+    // Check if files are in a subdirectory or at root
+    const { readdirSync, statSync, renameSync, rmSync } = await import("fs");
+    const entries = readdirSync(tmpDir);
+    if (entries.length === 1 && statSync(join(tmpDir, entries[0])).isDirectory()) {
+      // Nested: move contents from subdirectory
+      const subDir = join(tmpDir, entries[0]);
+      for (const f of readdirSync(subDir)) {
+        renameSync(join(subDir, f), join(extractDir, f));
+      }
+    } else {
+      // Flat: move all files directly
+      for (const f of entries) {
+        renameSync(join(tmpDir, f), join(extractDir, f));
+      }
+    }
+    rmSync(tmpDir, { recursive: true, force: true });
+
     // Clean up tar
     const { unlinkSync } = await import("fs");
     unlinkSync(tarDest);
@@ -202,18 +221,22 @@ export async function fullSetup() {
     modelPath = null;
   }
 
-  // 3. Build frontend
-  console.log("\n  Building frontend...");
-  try {
-    const { execSync } = await import("child_process");
-    const frontendDir = join(import.meta.dirname, "..", "frontend");
-    // Install frontend dependencies first
-    execSync("npm install", { cwd: frontendDir, stdio: "pipe" });
-    // Build with npx to ensure local binaries are found
-    execSync("npx tsc -b && npx vite build", { cwd: frontendDir, stdio: "pipe" });
-    console.log("  ✓ Frontend built");
-  } catch (err) {
-    console.log("  ⚠ Frontend build skipped (run manually: cd frontend && npm install && npm run build)");
+  // 3. Build frontend (skip if dist/ already exists — committed to repo)
+  const frontendDist = join(import.meta.dirname, "..", "frontend", "dist");
+  const frontendIndex = join(frontendDist, "index.html");
+  if (existsSync(frontendIndex)) {
+    console.log("\n  ✓ Frontend pre-built (dist/index.html found)");
+  } else {
+    console.log("\n  Building frontend...");
+    try {
+      const { execSync } = await import("child_process");
+      const frontendDir = join(import.meta.dirname, "..", "frontend");
+      execSync("npm install", { cwd: frontendDir, stdio: "pipe" });
+      execSync("npx tsc -b && npx vite build", { cwd: frontendDir, stdio: "pipe" });
+      console.log("  ✓ Frontend built");
+    } catch (err) {
+      console.log("  ⚠ Frontend build skipped — run `cd frontend && npm install && npm run build` on a desktop");
+    }
   }
 
   // 4. Save config
