@@ -8,38 +8,41 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build static binary via Docker
+      - name: Install musl cross-compiler for ARM
         run: |
-          docker run --rm -v ${{ github.workspace }}:/workspace --platform linux/amd64 ubuntu:22.04 bash -c '
-            apt-get update -qq &&
-            apt-get install -y -qq cmake g++-arm-linux-gnueabihf gcc-arm-linux-gnueabihf git ca-certificates &&
-            git clone --depth 1 --branch b10622 https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp &&
-            cd /tmp/llama.cpp &&
-            cmake -B build \
-              -DCMAKE_SYSTEM_NAME=Linux \
-              -DCMAKE_SYSTEM_PROCESSOR=armv7l \
-              -DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc \
-              -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++ \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_C_FLAGS="-static" \
-              -DCMAKE_CXX_FLAGS="-static" \
-              -DCMAKE_EXE_LINKER_FLAGS="-static -Wl,--no-dynamic-linker" \
-              -DBUILD_SHARED_LIBS=OFF \
-              -DLLAMA_CURL=OFF \
-              -DGGML_NATIVE=OFF \
-              -DLLAMA_BUILD_TESTS=OFF \
-              -DLLAMA_BUILD_EXAMPLES=OFF &&
-            cmake --build build --config Release -j$(nproc) &&
-            echo "=== Build results ===" &&
-            file build/bin/llama-server &&
-            ls -lh build/bin/llama-server &&
-            cp build/bin/llama-server /workspace/llama-server-arm-static
-          '
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake git curl xz-utils
+          curl -fSL https://musl.cc/arm-linux-musleabihf-cross.tgz -o /tmp/musl-cross.tgz
+          tar xzf /tmp/musl-cross.tgz -C /opt/
+          echo "/opt/arm-linux-musleabihf-cross/bin" >> $GITHUB_PATH
+      - name: Clone llama.cpp
+        run: |
+          git clone --depth 1 --branch b10622 https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
+      - name: Build static binary with musl
+        run: |
+          cd /tmp/llama.cpp
+          cmake -B build \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=armv7l \
+            -DCMAKE_C_COMPILER=arm-linux-musleabihf-gcc \
+            -DCMAKE_CXX_COMPILER=arm-linux-musleabihf-g++ \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLLAMA_CURL=OFF \
+            -DGGML_NATIVE=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release -j$(nproc)
+          echo "=== Build results ==="
+          file build/bin/llama-server
+          ls -lh build/bin/llama-server
+          echo "=== Verify static ==="
+          file build/bin/llama-server | grep -q "statically linked" && echo "STATIC OK" || echo "WARNING: not fully static"
       - name: Package
         run: |
-          tar -czf llama-server-arm-linux.tar.gz llama-server-arm-static
-          ls -lh llama-server-arm-linux.tar.gz
-          mv llama-server-arm-linux.tar.gz /tmp/
+          cd /tmp/llama.cpp/build/bin
+          tar -czf /tmp/llama-server-arm-linux.tar.gz llama-server
+          ls -lh /tmp/llama-server-arm-linux.tar.gz
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

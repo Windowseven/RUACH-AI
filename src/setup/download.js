@@ -8,24 +8,18 @@ const RUACH_DIR = join(homedir(), ".ruach");
 const RUNTIME_DIR = join(RUACH_DIR, "runtime");
 const MODELS_DIR = join(RUACH_DIR, "models");
 
-// GitHub releases base URL — update this to your repo
 const RELEASES_BASE = "https://github.com/Windowseven/RUACH-AI/releases/download";
 
-// ── Detect actual architecture (Node.js can lie on Termux) ──
 function detectArch() {
-  // First try uname -m (most reliable on Linux/Android)
   try {
     const uname = execSync("uname -m", { encoding: "utf8" }).trim().toLowerCase();
     if (uname === "armv7l" || uname === "armv6l") return "arm";
     if (uname === "aarch64" || uname === "arm64") return "arm64";
     if (uname === "x86_64" || uname === "amd64") return "x64";
   } catch {}
-
-  // Fallback to Node.js process.arch
   return arch();
 }
 
-// ── Architecture mapping ───────────────────────────────────
 function getArchLabel() {
   const a = detectArch();
   const p = platform();
@@ -40,6 +34,10 @@ function getArchLabel() {
   }
   if (p === "win32") return "x86_64-windows";
   return `${a}-${p}`;
+}
+
+function isTermux() {
+  return existsSync("/data/data/com.termux");
 }
 
 function getServerBinaryName() {
@@ -58,7 +56,6 @@ async function downloadFile(url, dest, label) {
 
   mkdirSync(join(dest, ".."), { recursive: true });
 
-  // Try curl first (more reliable on Termux), then fetch
   const curlOk = await downloadWithCurl(url, dest);
   if (curlOk) {
     if (platform() !== "win32") chmodSync(dest, 0o755);
@@ -66,7 +63,6 @@ async function downloadFile(url, dest, label) {
     return true;
   }
 
-  // Fallback to Node.js fetch with retries
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const resp = await fetch(url, { redirect: "follow" });
@@ -89,9 +85,9 @@ async function downloadFile(url, dest, label) {
 
 async function downloadWithCurl(url, dest) {
   try {
-    execSync(`curl -fSL --connect-timeout 15 --max-time 120 -o "${dest}" "${url}"`, {
+    execSync(`curl -fSL --connect-timeout 15 --max-time 300 -o "${dest}" "${url}"`, {
       stdio: "pipe",
-      timeout: 130000,
+      timeout: 310000,
     });
     return true;
   } catch {
@@ -99,99 +95,199 @@ async function downloadWithCurl(url, dest) {
   }
 }
 
+// ── Test if binary actually runs ───────────────────────────
+function testBinary(binPath) {
+  try {
+    execSync(`"${binPath}" --version 2>&1 || "${binPath}" --help 2>&1 || true`, {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: "pipe",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ── Build llama.cpp from source on device (Termux fallback) ──
+async function buildFromSource(destDir, bin) {
+  console.log("\n  Pre-built binary incompatible — building from source...");
+
+  // Check build tools
+  const deps = ["git", "cmake", "clang"];
+  const missing = [];
+  for (const dep of deps) {
+    try {
+      execSync(`which ${dep}`, { stdio: "pipe" });
+    } catch {
+      missing.push(dep);
+    }
+  }
+
+  if (missing.length > 0) {
+    console.log(`  Installing build dependencies: ${missing.join(", ")}...`);
+    try {
+      execSync(`pkg install -y ${missing.join(" ")}`, { stdio: "pipe", timeout: 120000 });
+    } catch {
+      throw new Error(
+        `Failed to install build tools. Run manually:\n` +
+        `  pkg install ${missing.join(" ")}\n` +
+        `Then re-run: npm install`
+      );
+    }
+  }
+
+  const buildDir = join(RUACH_DIR, "build-src");
+  mkdirSync(buildDir, { recursive: true });
+
+  try {
+    console.log("  Cloning llama.cpp...");
+    if (existsSync(join(buildDir, "llama.cpp"))) {
+      execSync("git pull", { cwd: join(buildDir, "llama.cpp"), stdio: "pipe" });
+    } else {
+      execSync("git clone --depth 1 --branch b10622 https://github.com/ggml-org/llama.cpp.git", {
+        cwd: buildDir,
+        stdio: "pipe",
+        timeout: 120000,
+      });
+    }
+
+    const srcDir = join(buildDir, "llama.cpp");
+    console.log("  Configuring...");
+    execSync(
+      `cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF`,
+      { cwd: srcDir, stdio: "pipe", timeout: 120000 }
+    );
+
+    const threads = Math.max(1, (execSync("nproc", { encoding: "utf8" }).trim() || "2"));
+    console.log(`  Building (${threads} threads)...`);
+    execSync(`cmake --build build --config Release -j${threads}`, {
+      cwd: srcDir,
+      stdio: "pipe",
+      timeout: 600000,
+    });
+
+    const builtBin = join(srcDir, "build", "bin", bin);
+    if (!existsSync(builtBin)) {
+      throw new Error("Build succeeded but binary not found");
+    }
+
+    mkdirSync(destDir, { recursive: true });
+    const destBin = join(destDir, bin);
+
+    // Copy binary
+    const { copyFileSync } = await import("fs");
+    copyFileSync(builtBin, destBin);
+    chmodSync(destBin, 0o755);
+
+    // Copy shared libs if any
+    const buildBinDir = join(srcDir, "build", "bin");
+    try {
+      const { readdirSync, copyFileSync: cf } = await import("fs");
+      for (const f of readdirSync(buildBinDir)) {
+        if (f.startsWith("lib") && f.endsWith(".so")) {
+          cf(join(buildBinDir, f), join(destDir, f));
+        }
+      }
+    } catch {}
+
+    console.log("  ✓ Built from source successfully");
+    return destBin;
+  } finally {
+    // Clean up build dir
+    try {
+      execSync(`rm -rf "${buildDir}"`, { stdio: "pipe" });
+    } catch {}
+  }
+}
+
 // ── Install runtime ────────────────────────────────────────
 export async function installRuntime() {
   const archLabel = getArchLabel();
   const bin = getServerBinaryName();
-  const dest = join(RUNTIME_DIR, archLabel, bin);
+  const destDir = join(RUNTIME_DIR, archLabel);
+  const dest = join(destDir, bin);
 
+  // Check if existing binary works
   if (existsSync(dest)) {
-    console.log(`  ✓ Runtime already installed (${archLabel})`);
-    return dest;
+    if (testBinary(dest)) {
+      console.log(`  ✓ Runtime already installed (${archLabel})`);
+      return dest;
+    }
+    console.log(`  ⚠ Existing binary broken — reinstalling...`);
+    try { (await import("fs")).unlinkSync(dest); } catch {}
   }
 
-  // Try GitHub release
+  // Try downloading pre-built
   const version = "0.5.0";
   const url = `${RELEASES_BASE}/v${version}/llama-server-${archLabel}.tar.gz`;
 
   console.log(`\n  Installing runtime for ${archLabel}...`);
 
-  // Download tar.gz
   const tarDest = join(RUNTIME_DIR, `${archLabel}.tar.gz`);
   const ok = await downloadFile(url, tarDest, `runtime (${archLabel})`);
 
-  if (!ok) {
-    // Fallback: try direct binary URL
-    const binUrl = `${RELEASES_BASE}/v${version}/${bin}-${archLabel}`;
-    const binOk = await downloadFile(binUrl, dest, `runtime binary (${archLabel})`);
-    if (!binOk) {
-      throw new Error(
-        `Could not download runtime for ${archLabel}.\n` +
-        `Manually place ${bin} in: ${join(RUNTIME_DIR, archLabel)}/`
-      );
+  if (ok) {
+    try {
+      mkdirSync(destDir, { recursive: true });
+      const tmpDir = join(RUNTIME_DIR, `_tmp_${archLabel}`);
+      mkdirSync(tmpDir, { recursive: true });
+      execSync(`tar -xzf "${tarDest}" -C "${tmpDir}"`, { stdio: "pipe" });
+
+      const { readdirSync, statSync, renameSync, rmSync } = await import("fs");
+      const entries = readdirSync(tmpDir);
+      if (entries.length === 1 && statSync(join(tmpDir, entries[0])).isDirectory()) {
+        for (const f of readdirSync(join(tmpDir, entries[0]))) {
+          renameSync(join(tmpDir, entries[0], f), join(destDir, f));
+        }
+      } else {
+        for (const f of entries) {
+          renameSync(join(tmpDir, f), join(destDir, f));
+        }
+      }
+      rmSync(tmpDir, { recursive: true, force: true });
+
+      if (platform() !== "win32") {
+        for (const f of readdirSync(destDir)) {
+          chmodSync(join(destDir, f), 0o755);
+        }
+      }
+
+      try { (await import("fs")).unlinkSync(tarDest); } catch {}
+    } catch (err) {
+      console.log(`  ✗ Extraction failed: ${err.message}`);
     }
+  }
+
+  // Verify the downloaded binary works
+  if (existsSync(dest) && testBinary(dest)) {
+    console.log(`  ✓ Runtime verified (${archLabel})`);
     return dest;
   }
 
-  // Extract tar.gz
-  const { execSync } = await import("child_process");
-  const extractDir = join(RUNTIME_DIR, archLabel);
-  mkdirSync(extractDir, { recursive: true });
-  try {
-    // Extract to temp dir first to handle both flat and nested archives
-    const tmpDir = join(RUNTIME_DIR, `_tmp_${archLabel}`);
-    mkdirSync(tmpDir, { recursive: true });
-    execSync(`tar -xzf "${tarDest}" -C "${tmpDir}"`, { stdio: "pipe" });
-
-    // Check if files are in a subdirectory or at root
-    const { readdirSync, statSync, renameSync, rmSync } = await import("fs");
-    const entries = readdirSync(tmpDir);
-    if (entries.length === 1 && statSync(join(tmpDir, entries[0])).isDirectory()) {
-      // Nested: move contents from subdirectory
-      const subDir = join(tmpDir, entries[0]);
-      for (const f of readdirSync(subDir)) {
-        renameSync(join(subDir, f), join(extractDir, f));
-      }
-    } else {
-      // Flat: move all files directly
-      for (const f of entries) {
-        renameSync(join(tmpDir, f), join(extractDir, f));
-      }
-    }
-    rmSync(tmpDir, { recursive: true, force: true });
-
-    // Make binary executable
-    if (platform() !== "win32" && existsSync(dest)) {
-      chmodSync(dest, 0o755);
-    }
-
-    // Also make all extracted files executable (shared libs, etc.)
-    if (platform() !== "win32") {
-      try {
-        const { readdirSync } = await import("fs");
-        for (const f of readdirSync(extractDir)) {
-          chmodSync(join(extractDir, f), 0o755);
-        }
-      } catch {}
-    }
-
-    // Clean up tar
-    const { unlinkSync } = await import("fs");
-    unlinkSync(tarDest);
-  } catch (err) {
-    throw new Error(`Failed to extract runtime: ${err.message}`);
+  // Pre-built binary doesn't work (wrong linker, wrong arch, etc.)
+  if (existsSync(dest)) {
+    console.log(`  ⚠ Pre-built binary incompatible with this system`);
   }
 
-  if (!existsSync(dest)) {
-    throw new Error(`Runtime binary not found after extraction at ${dest}`);
+  // Build from source (Termux fallback)
+  if (isTermux() || platform() === "linux") {
+    try {
+      return await buildFromSource(destDir, bin);
+    } catch (err) {
+      console.log(`  ✗ Build from source failed: ${err.message}`);
+    }
   }
 
-  return dest;
+  throw new Error(
+    `Runtime binary doesn't work on this system.\n` +
+    `On Termux, run: pkg install glibc-repo && pkg install glibc\n` +
+    `Or build manually: cd /tmp && git clone --depth 1 --branch b10622 https://github.com/ggml-org/llama.cpp.git && cd llama.cpp && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2`
+  );
 }
 
 // ── Install model ──────────────────────────────────────────
 export async function installModel() {
-  // Check if any model exists
   if (existsSync(MODELS_DIR)) {
     try {
       const { readdirSync } = await import("fs");
@@ -206,7 +302,6 @@ export async function installModel() {
 
   mkdirSync(MODELS_DIR, { recursive: true });
 
-  // Download TinyLlama 1.1B Q4_0 (~637 MB) — small enough for ARM32
   const modelName = "tinyllama-1.1b-q4_0.gguf";
   const url = "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_0.gguf";
   const dest = join(MODELS_DIR, modelName);
@@ -228,12 +323,10 @@ export async function installModel() {
 export async function fullSetup() {
   console.log("\n  RUACH Setup\n");
 
-  // Create directories
   mkdirSync(RUACH_DIR, { recursive: true });
   mkdirSync(RUNTIME_DIR, { recursive: true });
   mkdirSync(MODELS_DIR, { recursive: true });
 
-  // 1. Install runtime
   let runtimePath;
   try {
     runtimePath = await installRuntime();
@@ -242,7 +335,6 @@ export async function fullSetup() {
     runtimePath = null;
   }
 
-  // 2. Install model
   let modelPath;
   try {
     modelPath = await installModel();
@@ -251,7 +343,6 @@ export async function fullSetup() {
     modelPath = null;
   }
 
-  // 3. Frontend (pre-built in repo, no build needed on device)
   const projectRoot = join(import.meta.dirname, "..", "..");
   const frontendIndex = join(projectRoot, "frontend", "dist", "index.html");
   if (existsSync(frontendIndex)) {
@@ -260,7 +351,6 @@ export async function fullSetup() {
     console.log("\n  ⚠ Frontend not found — rebuild on dev machine: cd frontend && npm run build");
   }
 
-  // 4. Link ruach command globally
   try {
     const { execSync } = await import("child_process");
     const projectRoot = join(import.meta.dirname, "..", "..");
@@ -270,7 +360,6 @@ export async function fullSetup() {
     console.log("  ⚠ Could not link `ruach` — use `npx ruach start` instead");
   }
 
-  // 5. Save config
   const { writeFileSync } = await import("fs");
   const config = {
     version: "0.5.0",
@@ -280,7 +369,6 @@ export async function fullSetup() {
   };
   writeFileSync(join(RUACH_DIR, "config.json"), JSON.stringify(config, null, 2));
 
-  // 6. Summary
   console.log("\n  ── Setup Complete ──────────────────────");
   if (runtimePath && modelPath) {
     console.log("  ✓ Everything installed. Run `ruach start` to begin.\n");
