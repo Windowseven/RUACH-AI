@@ -63,8 +63,22 @@ router.get("/debug", async (req, res) => {
     try {
       info.permInfo = execSync(`ls -la "${serverPath}"`, { encoding: "utf8" }).trim();
     } catch {}
+    // Try running the binary to see actual error
     try {
-      info.ldd = execSync(`ldd "${serverPath}" 2>&1 || true`, { encoding: "utf8" }).trim().slice(0, 500);
+      const binDir = serverPath.replace(/\/llama-server$/, "");
+      info.runTest = execSync(`cd "${binDir}" && timeout 5 ./llama-server --help 2>&1 || true`, {
+        encoding: "utf8",
+        timeout: 10000,
+      }).trim().slice(0, 1000);
+    } catch (e) {
+      info.runTest = `exec failed: ${e.message}`;
+    }
+    // Check shared libs in same directory
+    try {
+      const binDir = serverPath.replace(/\/llama-server$/, "");
+      info.sharedLibs = execSync(`ls -la "${binDir}"/*.so* 2>/dev/null || echo "none"`, {
+        encoding: "utf8",
+      }).trim();
     } catch {}
   }
 
