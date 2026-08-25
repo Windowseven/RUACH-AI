@@ -13,7 +13,7 @@ const RUACH_DIR = join(homedir(), ".ruach");
 const RUNTIME_DIR = join(RUACH_DIR, "runtime");
 const MODELS_DIR = join(RUACH_DIR, "models");
 
-const commands = { setup, start, doctor, help };
+const commands = { setup, start, doctor, test, help };
 
 if (commands[command]) {
   commands[command]();
@@ -84,6 +84,122 @@ async function doctor() {
     : "\n  Some checks failed. Run `ruach setup`.\n");
 }
 
+// ── Test: try to start llama-server and report results ──────
+async function test() {
+  console.log("\n  RUACH LLM Test\n");
+
+  // 1. Find binary
+  const bin = platform() === "win32" ? "llama-server.exe" : "llama-server";
+  const serverPath = findFile(RUNTIME_DIR, bin);
+  console.log(`  Binary: ${serverPath || "NOT FOUND"}`);
+  if (!serverPath) {
+    console.log("  ✗ Cannot test — binary missing. Run `ruach setup`.\n");
+    process.exit(1);
+  }
+
+  // 2. Check file type
+  try {
+    const info = execSync(`file "${serverPath}"`, { encoding: "utf8" }).trim();
+    console.log(`  Type: ${info}`);
+  } catch {}
+
+  // 3. Check permissions
+  try {
+    const perms = execSync(`ls -la "${serverPath}"`, { encoding: "utf8" }).trim();
+    console.log(`  Perms: ${perms}`);
+  } catch {}
+
+  // 4. Set up env with LD_LIBRARY_PATH
+  const binDir = serverPath.replace(/\/[^/]+$/, "");
+  const env = {
+    ...process.env,
+    LD_LIBRARY_PATH: binDir + (process.env.LD_LIBRARY_PATH ? ":" + process.env.LD_LIBRARY_PATH : ""),
+    OMP_NUM_THREADS: "1",
+  };
+
+  // 5. Try --version
+  console.log("\n  Testing --version...");
+  try {
+    const result = execSync(`"${serverPath}" --version 2>&1`, {
+      encoding: "utf8",
+      timeout: 5000,
+      env,
+      stdio: "pipe",
+    });
+    console.log(`  ✓ ${result.trim().split("\n")[0]}`);
+  } catch (err) {
+    const output = (err.stdout || err.stderr || "").toString().trim();
+    if (output) {
+      console.log(`  Output: ${output.split("\n")[0]}`);
+    }
+    console.log(`  ✗ --version failed: ${err.status !== null ? `exit code ${err.status}` : err.message}`);
+  }
+
+  // 6. Find model
+  const modelPath = findFile(MODELS_DIR, ".gguf");
+  console.log(`\n  Model: ${modelPath || "NOT FOUND"}`);
+  if (!modelPath) {
+    console.log("  ✗ Cannot test inference — model missing.\n");
+    process.exit(1);
+  }
+
+  // 7. Try to start llama-server with model using Node.js spawn (no timeout cmd needed)
+  console.log("\n  Starting llama-server with model (10s test)...");
+  const { spawn } = await import("child_process");
+  await new Promise((resolve) => {
+    let output = "";
+    let listening = false;
+
+    const proc = spawn(serverPath, [
+      "--model", modelPath,
+      "--host", "127.0.0.1",
+      "--port", "18080",
+      "--ctx-size", "512",
+      "--threads", "1",
+    ], { env, stdio: ["ignore", "pipe", "pipe"] });
+
+    const onLine = (data) => {
+      const text = data.toString();
+      output += text;
+      if (!listening && text.includes("listening")) {
+        listening = true;
+        console.log(`  ✓ Listening detected!`);
+      }
+    };
+
+    proc.stdout.on("data", onLine);
+    proc.stderr.on("data", onLine);
+
+    proc.on("error", (err) => {
+      console.log(`  ✗ Spawn error: ${err.message}`);
+      resolve();
+    });
+
+    proc.on("exit", (code) => {
+      if (!listening) {
+        console.log(`  ✗ Exited with code ${code} before listening`);
+      }
+      resolve();
+    });
+
+    // Kill after 10s
+    setTimeout(() => {
+      proc.kill("SIGTERM");
+      if (!listening) {
+        console.log(`  ✗ Did not detect "listening" within 10s`);
+      }
+      console.log(`\n  Last 15 lines of output:`);
+      const lines = output.trim().split("\n");
+      for (const line of lines.slice(-15)) {
+        console.log(`    ${line}`);
+      }
+      resolve();
+    }, 10000);
+  });
+
+  console.log("");
+}
+
 // ── Help ───────────────────────────────────────────────────
 function help() {
   console.log(`
@@ -93,6 +209,7 @@ function help() {
     ruach setup    Install everything (runtime + model + frontend)
     ruach start    Start the server
     ruach doctor   Run diagnostics
+    ruach test     Test if llama-server binary works
     ruach help     Show this message
 
   Quick start:
