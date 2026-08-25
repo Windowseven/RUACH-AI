@@ -56,30 +56,45 @@ async function downloadFile(url, dest, label) {
   console.log(`  ↓ Downloading ${label}...`);
   console.log(`    ${url}`);
 
-  try {
-    const resp = await fetch(url, { redirect: "follow" });
-    if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
-    }
+  mkdirSync(join(dest, ".."), { recursive: true });
 
-    mkdirSync(join(dest, ".."), { recursive: true });
-    const fileStream = createWriteStream(dest);
-    await pipeline(resp.body, fileStream);
-
-    // Make executable on Unix
-    if (platform() !== "win32") {
-      chmodSync(dest, 0o755);
-    }
-
+  // Try curl first (more reliable on Termux), then fetch
+  const curlOk = await downloadWithCurl(url, dest);
+  if (curlOk) {
+    if (platform() !== "win32") chmodSync(dest, 0o755);
     console.log(`  ✓ ${label} installed`);
     return true;
-  } catch (err) {
-    console.log(`  ✗ ${label} failed: ${err.message}`);
-    // Clean up partial download
+  }
+
+  // Fallback to Node.js fetch with retries
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const { unlinkSync } = await import("fs");
-      if (existsSync(dest)) unlinkSync(dest);
-    } catch {}
+      const resp = await fetch(url, { redirect: "follow" });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+      const fileStream = createWriteStream(dest);
+      await pipeline(resp.body, fileStream);
+      if (platform() !== "win32") chmodSync(dest, 0o755);
+      console.log(`  ✓ ${label} installed`);
+      return true;
+    } catch (err) {
+      console.log(`    fetch attempt ${attempt}/3 failed: ${err.message}`);
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 2000 * attempt));
+    }
+  }
+
+  console.log(`  ✗ ${label} failed after 3 attempts`);
+  try { if (existsSync(dest)) (await import("fs")).unlinkSync(dest); } catch {}
+  return false;
+}
+
+async function downloadWithCurl(url, dest) {
+  try {
+    execSync(`curl -fSL --connect-timeout 15 --max-time 120 -o "${dest}" "${url}"`, {
+      stdio: "pipe",
+      timeout: 130000,
+    });
+    return true;
+  } catch {
     return false;
   }
 }
