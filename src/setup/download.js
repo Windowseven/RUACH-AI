@@ -267,7 +267,19 @@ export async function installRuntime() {
 
   // Pre-built binary doesn't work (wrong linker, wrong arch, etc.)
   if (existsSync(dest)) {
-    console.log(`  ⚠ Pre-built binary incompatible with this system`);
+    console.log(`  ⚠ Pre-built binary incompatible — trying to fix...`);
+  }
+
+  // On Termux, try installing glibc first (provides missing dynamic linker)
+  if (isTermux()) {
+    try {
+      console.log("  Installing glibc (provides missing dynamic linker)...");
+      execSync("pkg install -y glibc-repo glibc 2>/dev/null || true", { stdio: "pipe", timeout: 60000 });
+      if (existsSync(dest) && testBinary(dest)) {
+        console.log(`  ✓ Runtime works after glibc install`);
+        return dest;
+      }
+    } catch {}
   }
 
   // Build from source (Termux fallback)
