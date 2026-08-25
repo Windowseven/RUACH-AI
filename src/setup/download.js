@@ -221,23 +221,13 @@ export async function fullSetup() {
     modelPath = null;
   }
 
-  // 3. Build frontend (skip if dist/ already exists — committed to repo)
+  // 3. Frontend (pre-built in repo, no build needed on device)
   const projectRoot = join(import.meta.dirname, "..", "..");
-  const frontendDist = join(projectRoot, "frontend", "dist");
-  const frontendIndex = join(frontendDist, "index.html");
+  const frontendIndex = join(projectRoot, "frontend", "dist", "index.html");
   if (existsSync(frontendIndex)) {
-    console.log("\n  ✓ Frontend pre-built (dist/index.html found)");
+    console.log("\n  ✓ Frontend ready");
   } else {
-    console.log("\n  Building frontend...");
-    try {
-      const { execSync } = await import("child_process");
-      const frontendDir = join(projectRoot, "frontend");
-      execSync("npm install", { cwd: frontendDir, stdio: "pipe" });
-      execSync("npx tsc -b && npx vite build", { cwd: frontendDir, stdio: "pipe" });
-      console.log("  ✓ Frontend built");
-    } catch (err) {
-      console.log("  ⚠ Frontend build failed — run `cd frontend && npm install && npm run build` on a desktop");
-    }
+    console.log("\n  ⚠ Frontend not found — rebuild on dev machine: cd frontend && npm run build");
   }
 
   // 4. Save config
