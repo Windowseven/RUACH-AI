@@ -98,5 +98,13 @@ server.listen(PORT, HOST, () => {
 });
 
 // ── Graceful shutdown ──────────────────────────────────────
-process.on("SIGINT", () => { llm.stop(); server.close(); process.exit(0); });
-process.on("SIGTERM", () => { llm.stop(); server.close(); process.exit(0); });
+process.on("SIGINT", () => {
+  llm.stop();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 3000);
+});
+process.on("SIGTERM", () => {
+  llm.stop();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 3000);
+});

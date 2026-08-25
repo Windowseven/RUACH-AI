@@ -100,7 +100,7 @@ export class LLMService {
           "--host", "127.0.0.1",
           "--port", String(this.port),
           "--ctx-size", "2048",
-          "--threads", String(Math.max(1, (globalThis.navigator?.hardwareConcurrency || cpus().length || 2) - 1)),
+          "--threads", String(Math.max(1, cpus().length - 1)),
         ],
         {
           stdio: ["ignore", "pipe", "pipe"],
@@ -112,15 +112,16 @@ export class LLMService {
         }
       );
 
-      this.startTime = Date.now();
       let started = false;
-
+      let startTimeout;
       let stderrOutput = "";
 
       this.process.stdout.on("data", (data) => {
         const line = data.toString();
         if (!started && line.includes("listening")) {
           started = true;
+          clearTimeout(startTimeout);
+          this.startTime = Date.now();
           resolve();
         }
       });
@@ -130,6 +131,8 @@ export class LLMService {
         stderrOutput += line;
         if (!started && line.includes("listening")) {
           started = true;
+          clearTimeout(startTimeout);
+          this.startTime = Date.now();
           resolve();
         }
       });
@@ -149,7 +152,7 @@ export class LLMService {
       });
 
       // Timeout after 30s
-      setTimeout(() => {
+      startTimeout = setTimeout(() => {
         if (!started) {
           this.process?.kill();
           this.process = null;

@@ -83,7 +83,7 @@ router.post("/chat/stream", async (req, res) => {
   const llm = req.app.get("llm");
   const { message, conversation_id } = req.body;
 
-  if (!message) {
+  if (!message || typeof message !== "string") {
     return res.status(400).json({
       error: { code: "BAD_REQUEST", message: "message is required" },
     });

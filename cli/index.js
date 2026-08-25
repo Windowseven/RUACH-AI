@@ -29,8 +29,8 @@ async function setup() {
 }
 
 // ── Start: launch server + llama.cpp ───────────────────────
-function start() {
-  import("../src/server.js");
+async function start() {
+  await import("../src/server.js");
 }
 
 // ── Doctor: health check ───────────────────────────────────

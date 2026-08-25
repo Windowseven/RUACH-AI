@@ -1,8 +1,12 @@
 import { existsSync, mkdirSync, createWriteStream, chmodSync, readFileSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
 import { homedir, arch, platform } from "os";
 import { pipeline } from "stream/promises";
 import { execSync } from "child_process";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const RUACH_DIR = join(homedir(), ".ruach");
 const RUNTIME_DIR = join(RUACH_DIR, "runtime");
@@ -98,10 +102,16 @@ async function downloadWithCurl(url, dest) {
 // ── Test if binary actually runs ───────────────────────────
 function testBinary(binPath) {
   try {
+    const binDir = dirname(binPath);
+    const env = {
+      ...process.env,
+      LD_LIBRARY_PATH: binDir + (process.env.LD_LIBRARY_PATH ? ":" + process.env.LD_LIBRARY_PATH : ""),
+    };
     const result = execSync(`"${binPath}" --version`, {
       encoding: "utf8",
       timeout: 5000,
       stdio: "pipe",
+      env,
     });
     return result.length > 0;
   } catch {
@@ -114,7 +124,7 @@ async function buildFromSource(destDir, bin) {
   console.log("\n  Pre-built binary incompatible — building from source...");
 
   // Check build tools
-  const deps = ["git", "cmake", "clang"];
+  const deps = isTermux() ? ["git", "cmake", "clang"] : ["git", "cmake", "g++"];
   const missing = [];
   for (const dep of deps) {
     try {
@@ -127,11 +137,15 @@ async function buildFromSource(destDir, bin) {
   if (missing.length > 0) {
     console.log(`  Installing build dependencies: ${missing.join(", ")}...`);
     try {
-      execSync(`pkg install -y ${missing.join(" ")}`, { stdio: "pipe", timeout: 120000 });
+      if (isTermux()) {
+        execSync(`pkg install -y ${missing.join(" ")}`, { stdio: "pipe", timeout: 120000 });
+      } else {
+        execSync(`sudo apt-get install -y ${missing.join(" ")}`, { stdio: "pipe", timeout: 120000 });
+      }
     } catch {
       throw new Error(
         `Failed to install build tools. Run manually:\n` +
-        `  pkg install ${missing.join(" ")}\n` +
+        `  ${isTermux() ? "pkg" : "sudo apt-get install"} ${missing.join(" ")}\n` +
         `Then re-run: npm install`
       );
     }
@@ -159,7 +173,16 @@ async function buildFromSource(destDir, bin) {
       { cwd: srcDir, stdio: "pipe", timeout: 120000 }
     );
 
-    const threads = Math.max(1, (execSync("nproc", { encoding: "utf8" }).trim() || "2"));
+    let threads = 2;
+    try {
+      threads = Math.max(1, parseInt(execSync("nproc", { encoding: "utf8" }).trim(), 10) || 2);
+    } catch {
+      try {
+        threads = Math.max(1, parseInt(execSync("grep -c ^processor /proc/cpuinfo", { encoding: "utf8" }).trim(), 10) || 2);
+      } catch {
+        threads = 2;
+      }
+    }
     console.log(`  Building (${threads} threads)...`);
     execSync(`cmake --build build --config Release -j${threads}`, {
       cwd: srcDir,
@@ -355,7 +378,7 @@ export async function fullSetup() {
     modelPath = null;
   }
 
-  const projectRoot = join(import.meta.dirname, "..", "..");
+  const projectRoot = join(__dirname, "..", "..");
   const frontendIndex = join(projectRoot, "frontend", "dist", "index.html");
   if (existsSync(frontendIndex)) {
     console.log("\n  ✓ Frontend ready");
@@ -365,7 +388,6 @@ export async function fullSetup() {
 
   try {
     const { execSync } = await import("child_process");
-    const projectRoot = join(import.meta.dirname, "..", "..");
     execSync("npm link", { cwd: projectRoot, stdio: "pipe" });
     console.log("  ✓ `ruach` command linked");
   } catch {
