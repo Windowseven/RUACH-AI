@@ -34,18 +34,40 @@ function getArchLabel() {
   return `${a}-${p}`;
 }
 
-// GET /api/v1/ready — health check
+// GET /api/v1/ready — health check (matches frontend expectations)
 router.get("/ready", (req, res) => {
   const llm = req.app.get("llm");
   const modelPath = findModel();
   const serverBin = findServer();
 
+  const hasRuntime = !!serverBin;
+  const hasModel = !!modelPath;
+
+  // Frontend expects: status, database, inference
+  // database = "available" if runtime + model exist
+  // inference = "available" if LLM is running or can start
+  let status = "ready";
+  let database = "unavailable";
+  let inference = "unavailable";
+
+  if (hasRuntime && hasModel) {
+    database = "available";
+  }
+  if (llm.isRunning()) {
+    inference = "available";
+  } else if (hasRuntime && hasModel) {
+    // Can start on demand
+    inference = "available";
+    status = "ready";
+  } else {
+    status = "degraded";
+  }
+
   res.json({
     data: {
-      status: "ok",
-      inference: llm.isRunning() ? "running" : "stopped",
-      model: modelPath ? "found" : "missing",
-      runtime: serverBin ? "found" : "missing",
+      status,
+      database,
+      inference,
     },
   });
 });

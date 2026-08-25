@@ -2,6 +2,33 @@ import { Router } from "express";
 
 export const router = Router();
 
+// ── In-memory conversation store ───────────────────────────
+const conversations = new Map();
+let nextId = 1;
+
+function getOrCreateConversation(id) {
+  if (id && conversations.has(id)) return conversations.get(id);
+  const conv = { id: nextId++, title: null, messages: [] };
+  conversations.set(conv.id, conv);
+  return conv;
+}
+
+// GET /api/v1/conversations — list all
+router.get("/conversations", (req, res) => {
+  const list = [...conversations.values()].map((c) => ({
+    id: c.id,
+    title: c.title,
+  }));
+  res.json({ data: list });
+});
+
+// GET /api/v1/conversations/:id — detail with messages
+router.get("/conversations/:id", (req, res) => {
+  const conv = conversations.get(parseInt(req.params.id, 10));
+  if (!conv) return res.status(404).json({ error: { code: "NOT_FOUND", message: "Conversation not found" } });
+  res.json({ data: { messages: conv.messages } });
+});
+
 // POST /api/v1/chat — send message, get AI response
 router.post("/chat", async (req, res) => {
   const llm = req.app.get("llm");
@@ -31,7 +58,19 @@ router.post("/chat", async (req, res) => {
     const result = await llm.complete(message, {
       conversationId: conversation_id,
     });
-    res.json({ data: result });
+
+    // Store messages in conversation
+    const conv = getOrCreateConversation(conversation_id || result.conversation_id);
+    conv.messages.push({ role: "user", content: message });
+    conv.messages.push({ role: "assistant", content: result.content });
+    if (!conv.title) conv.title = message.slice(0, 60);
+
+    res.json({
+      data: {
+        conversation_id: conv.id,
+        content: result.content,
+      },
+    });
   } catch (err) {
     res.status(500).json({
       error: { code: "LLM_ERROR", message: err.message },
