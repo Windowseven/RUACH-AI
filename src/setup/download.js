@@ -98,12 +98,12 @@ async function downloadWithCurl(url, dest) {
 // ── Test if binary actually runs ───────────────────────────
 function testBinary(binPath) {
   try {
-    execSync(`"${binPath}" --version 2>&1 || "${binPath}" --help 2>&1 || true`, {
+    const result = execSync(`"${binPath}" --version`, {
       encoding: "utf8",
       timeout: 5000,
       stdio: "pipe",
     });
-    return true;
+    return result.length > 0;
   } catch {
     return false;
   }
