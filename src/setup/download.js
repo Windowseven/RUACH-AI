@@ -156,14 +156,25 @@ async function buildFromSource(destDir, bin) {
 
   try {
     console.log("  Cloning llama.cpp...");
-    if (existsSync(join(buildDir, "llama.cpp"))) {
-      execSync("git pull", { cwd: join(buildDir, "llama.cpp"), stdio: "pipe" });
+    const cloneDir = join(buildDir, "llama.cpp");
+    if (existsSync(cloneDir)) {
+      try { execSync("git pull", { cwd: cloneDir, stdio: "pipe", timeout: 60000 }); } catch {}
     } else {
-      execSync("git clone --depth 1 --branch b10622 https://github.com/ggml-org/llama.cpp.git", {
-        cwd: buildDir,
-        stdio: "pipe",
-        timeout: 120000,
-      });
+      // Retry clone up to 3 times (slow connections on mobile)
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          execSync("git clone --depth 1 --branch b10622 https://github.com/ggml-org/llama.cpp.git", {
+            cwd: buildDir,
+            stdio: "pipe",
+            timeout: 300000,
+          });
+          break;
+        } catch (err) {
+          console.log(`    Clone attempt ${attempt}/3 failed: ${err.message}`);
+          if (attempt === 3) throw err;
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+      }
     }
 
     const srcDir = join(buildDir, "llama.cpp");
@@ -183,11 +194,11 @@ async function buildFromSource(destDir, bin) {
         threads = 2;
       }
     }
-    console.log(`  Building (${threads} threads)...`);
+    console.log(`  Building (${threads} threads, may take 10+ minutes on mobile)...`);
     execSync(`cmake --build build --config Release -j${threads}`, {
       cwd: srcDir,
       stdio: "pipe",
-      timeout: 600000,
+      timeout: 1200000,
     });
 
     const builtBin = join(srcDir, "build", "bin", bin);
@@ -237,8 +248,7 @@ export async function installRuntime() {
       console.log(`  ✓ Runtime already installed (${archLabel})`);
       return dest;
     }
-    console.log(`  ⚠ Existing binary broken — reinstalling...`);
-    try { (await import("fs")).unlinkSync(dest); } catch {}
+    console.log(`  ⚠ Existing binary incompatible — will replace after download`);
   }
 
   // Try downloading pre-built
@@ -297,12 +307,16 @@ export async function installRuntime() {
   if (isTermux()) {
     try {
       console.log("  Installing glibc (provides missing dynamic linker)...");
-      execSync("pkg install -y glibc-repo glibc 2>/dev/null || true", { stdio: "pipe", timeout: 60000 });
+      const result = execSync("pkg install -y glibc-repo glibc 2>&1 || true", { encoding: "utf8", timeout: 60000 });
+      console.log("  glibc install output:", result.trim().split("\n").pop() || "done");
       if (existsSync(dest) && testBinary(dest)) {
         console.log(`  ✓ Runtime works after glibc install`);
         return dest;
       }
-    } catch {}
+      console.log("  ⚠ glibc installed but binary still doesn't work — building from source");
+    } catch (e) {
+      console.log(`  ⚠ glibc install failed: ${e.message}`);
+    }
   }
 
   // Build from source (Termux fallback)
