@@ -34,6 +34,43 @@ function getArchLabel() {
   return `${a}-${p}`;
 }
 
+// GET /api/v1/debug — detailed diagnostics
+router.get("/debug", async (req, res) => {
+  const llm = req.app.get("llm");
+  const { execSync } = await import("child_process");
+  const { existsSync, statSync } = await import("fs");
+  const { join } = await import("path");
+
+  const archLabel = llm.findServer()?.split("/").slice(-2, -1)[0] || "unknown";
+  const serverPath = llm.findServer();
+  const modelPath = llm.findModel();
+
+  const info = {
+    archLabel,
+    serverPath,
+    modelPath,
+    serverExists: serverPath ? existsSync(serverPath) : false,
+    serverIsFile: serverPath ? (() => { try { return statSync(serverPath).isFile(); } catch { return false; } })() : false,
+    modelExists: modelPath ? existsSync(modelPath) : false,
+    llmRunning: llm.isRunning(),
+  };
+
+  // Try to get file info
+  if (serverPath && existsSync(serverPath)) {
+    try {
+      info.fileInfo = execSync(`file "${serverPath}"`, { encoding: "utf8" }).trim();
+    } catch {}
+    try {
+      info.permInfo = execSync(`ls -la "${serverPath}"`, { encoding: "utf8" }).trim();
+    } catch {}
+    try {
+      info.ldd = execSync(`ldd "${serverPath}" 2>&1 || true`, { encoding: "utf8" }).trim().slice(0, 500);
+    } catch {}
+  }
+
+  res.json({ data: info });
+});
+
 // GET /api/v1/ready — health check (matches frontend expectations)
 router.get("/ready", (req, res) => {
   const llm = req.app.get("llm");

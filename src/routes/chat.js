@@ -48,7 +48,7 @@ router.post("/chat", async (req, res) => {
       return res.status(503).json({
         error: {
           code: "INFERENCE_UNAVAILABLE",
-          message: "LLM server not running. Run `ruach setup` first.",
+          message: `LLM server failed to start: ${err.message}. Run 'ruach setup' first.`,
         },
       });
     }
