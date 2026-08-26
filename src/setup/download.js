@@ -133,29 +133,22 @@ function testBinary(binPath) {
 // ── Get architecture-specific cmake flags ──────────────────
 function getCmakeFlags() {
   const a = detectArch();
-  const p = platform();
-  const isAndroid = p === "android" || isTermux();
 
-  const base = [
+  const flags = [
     "-DCMAKE_BUILD_TYPE=Release",
     "-DLLAMA_CURL=OFF",
     "-DLLAMA_BUILD_TESTS=OFF",
     "-DLLAMA_BUILD_EXAMPLES=OFF",
     "-DLLAMA_BUILD_UI=OFF",
+    "-DGGML_LLAMAFILE=OFF",
   ];
 
-  // ARM32 needs NEON flags (vld1q_f16 etc. are ARMv8, need explicit NEON on ARMv7)
+  // ARM32: disable features that require ARMv8
   if (a === "arm") {
-    base.push("-DCMAKE_C_FLAGS=-mfpu=neon");
-    base.push("-DCMAKE_CXX_FLAGS=-mfpu=neon");
+    flags.push("-DGGML_OPENMP=OFF");
   }
 
-  // Don't auto-detect native features on cross-compilation targets
-  if (isAndroid || a === "arm") {
-    base.push("-DGGML_NATIVE=OFF");
-  }
-
-  return base.join(" ");
+  return flags.join(" ");
 }
 
 // ── Build llama.cpp from source ────────────────────────────

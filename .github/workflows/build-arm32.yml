@@ -22,10 +22,9 @@ jobs:
             -DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc \
             -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++ \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_FLAGS="-mfpu=neon" \
-            -DCMAKE_CXX_FLAGS="-mfpu=neon" \
             -DLLAMA_CURL=OFF \
             -DGGML_NATIVE=OFF \
+            -DGGML_LLAMAFILE=OFF \
             -DLLAMA_BUILD_TESTS=OFF \
             -DLLAMA_BUILD_EXAMPLES=OFF \
             -DLLAMA_BUILD_UI=OFF
